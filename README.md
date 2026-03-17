@@ -45,6 +45,20 @@ Detailed variable reference: [docs/env.md](docs/env.md)
 
 1. Read [docs/install.md](docs/install.md)
 2. Fill [`.env.example`](.env.example) fields in your local `.env`
-3. Run baseline: [experiments/scripts/run_pinchbench_baseline.ps1](experiments/scripts/run_pinchbench_baseline.ps1)
-4. Run EcoClaw-enabled: [experiments/scripts/run_pinchbench_ecoclaw.ps1](experiments/scripts/run_pinchbench_ecoclaw.ps1)
-5. Compare outputs: [experiments/scripts/compare_pinchbench_results.ps1](experiments/scripts/compare_pinchbench_results.ps1)
+3. Run baseline
+4. Run EcoClaw-enabled
+5. Compare outputs
+
+Windows (PowerShell):
+
+- [experiments/scripts/run_pinchbench_baseline.ps1](experiments/scripts/run_pinchbench_baseline.ps1)
+- [experiments/scripts/run_pinchbench_ecoclaw.ps1](experiments/scripts/run_pinchbench_ecoclaw.ps1)
+- [experiments/scripts/compare_pinchbench_results.ps1](experiments/scripts/compare_pinchbench_results.ps1)
+
+Linux/macOS (bash):
+
+- [experiments/scripts/run_pinchbench_baseline.sh](experiments/scripts/run_pinchbench_baseline.sh)
+- [experiments/scripts/run_pinchbench_ecoclaw.sh](experiments/scripts/run_pinchbench_ecoclaw.sh)
+- [experiments/scripts/compare_pinchbench_results.sh](experiments/scripts/compare_pinchbench_results.sh)
+
+Linux quick guide: [docs/linux.md](docs/linux.md)

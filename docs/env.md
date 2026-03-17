@@ -28,6 +28,7 @@ ECOCLAW_JUDGE=claude-opus-4.1
 Supported aliases are defined in:
 
 - `experiments/scripts/common.ps1`
+- `experiments/scripts/common.sh`
 - `experiments/configs/models/litellm_model_list.yaml`
 
 ## Optional
@@ -35,3 +36,4 @@ Supported aliases are defined in:
 - `ECOCLAW_SUITE` (default `automated-only`)
 - `ECOCLAW_RUNS` (default `3`)
 - `ECOCLAW_TIMEOUT_MULTIPLIER` (default `1.0`)
+- `ECOCLAW_SKILL_DIR` (optional, PinchBench `skill` path for Linux/macOS)
