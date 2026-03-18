@@ -8,6 +8,9 @@ source "${SCRIPT_DIR}/common.sh"
 BASELINE_DIR="${REPO_ROOT}/results/raw/pinchbench/baseline"
 ECOCLAW_DIR="${REPO_ROOT}/results/raw/pinchbench/ecoclaw"
 REPORT_PATH="${REPO_ROOT}/results/reports/pinchbench_comparison.json"
+LOG_DIR="${REPO_ROOT}/log"
+RUN_TAG="$(date +%Y%m%d_%H%M%S)"
+RUN_LOG_FILE="${LOG_DIR}/pinchbench_compare_${RUN_TAG}.log"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -21,9 +24,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-mkdir -p "$(dirname "${REPORT_PATH}")"
+mkdir -p "$(dirname "${REPORT_PATH}")" "${LOG_DIR}"
 
-python - <<'PY' "${BASELINE_DIR}" "${ECOCLAW_DIR}" "${REPORT_PATH}"
+python - <<'PY' "${BASELINE_DIR}" "${ECOCLAW_DIR}" "${REPORT_PATH}" 2>&1 | tee "${RUN_LOG_FILE}"
 import json
 import pathlib
 import statistics
@@ -79,3 +82,5 @@ report = {
 report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
 print(f"Comparison report written to: {report_path}")
 PY
+
+echo "Compare log saved to: ${RUN_LOG_FILE}"

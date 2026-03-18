@@ -10,6 +10,7 @@ JUDGE=""
 SUITE=""
 RUNS=""
 TIMEOUT_MULTIPLIER=""
+PARALLEL=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -18,6 +19,7 @@ while [[ $# -gt 0 ]]; do
     --suite) SUITE="${2:-}"; shift 2 ;;
     --runs) RUNS="${2:-}"; shift 2 ;;
     --timeout-multiplier) TIMEOUT_MULTIPLIER="${2:-}"; shift 2 ;;
+    --parallel) PARALLEL="${2:-}"; shift 2 ;;
     *)
       echo "Unknown argument: $1" >&2
       exit 1
@@ -35,9 +37,14 @@ RESOLVED_JUDGE="$(resolve_model_alias "${JUDGE_LIKE}")"
 RESOLVED_SUITE="${SUITE:-${ECOCLAW_SUITE:-automated-only}}"
 RESOLVED_RUNS="${RUNS:-${ECOCLAW_RUNS:-3}}"
 RESOLVED_TIMEOUT="${TIMEOUT_MULTIPLIER:-${ECOCLAW_TIMEOUT_MULTIPLIER:-1.0}}"
+RESOLVED_PARALLEL="${PARALLEL:-${ECOCLAW_PARALLEL:-1}}"
 
 OUTPUT_DIR="${REPO_ROOT}/results/raw/pinchbench/baseline"
-mkdir -p "${OUTPUT_DIR}"
+LOG_DIR="${REPO_ROOT}/log"
+RUN_TAG="$(date +%Y%m%d_%H%M%S)"
+RUN_LOG_FILE="${LOG_DIR}/pinchbench_baseline_${RUN_TAG}.log"
+BENCHMARK_LOG_FILE="${LOG_DIR}/pinchbench_baseline_${RUN_TAG}_benchmark.log"
+mkdir -p "${OUTPUT_DIR}" "${LOG_DIR}"
 
 SKILL_DIR="$(resolve_skill_dir)"
 cd "${SKILL_DIR}"
@@ -46,6 +53,17 @@ uv run scripts/benchmark.py \
   --judge "${RESOLVED_JUDGE}" \
   --suite "${RESOLVED_SUITE}" \
   --runs "${RESOLVED_RUNS}" \
+  --parallel "${RESOLVED_PARALLEL}" \
   --timeout-multiplier "${RESOLVED_TIMEOUT}" \
   --output-dir "${OUTPUT_DIR}" \
-  --no-upload
+  --no-upload \
+  2>&1 | tee "${RUN_LOG_FILE}"
+
+if [[ -f "${SKILL_DIR}/benchmark.log" ]]; then
+  cp "${SKILL_DIR}/benchmark.log" "${BENCHMARK_LOG_FILE}"
+fi
+
+echo "Run log saved to: ${RUN_LOG_FILE}"
+if [[ -f "${BENCHMARK_LOG_FILE}" ]]; then
+  echo "Benchmark log saved to: ${BENCHMARK_LOG_FILE}"
+fi

@@ -37,7 +37,11 @@ RESOLVED_RUNS="${RUNS:-${ECOCLAW_RUNS:-3}}"
 RESOLVED_TIMEOUT="${TIMEOUT_MULTIPLIER:-${ECOCLAW_TIMEOUT_MULTIPLIER:-1.0}}"
 
 OUTPUT_DIR="${REPO_ROOT}/results/raw/pinchbench/ecoclaw"
-mkdir -p "${OUTPUT_DIR}"
+LOG_DIR="${REPO_ROOT}/log"
+RUN_TAG="$(date +%Y%m%d_%H%M%S)"
+RUN_LOG_FILE="${LOG_DIR}/pinchbench_ecoclaw_${RUN_TAG}.log"
+BENCHMARK_LOG_FILE="${LOG_DIR}/pinchbench_ecoclaw_${RUN_TAG}_benchmark.log"
+mkdir -p "${OUTPUT_DIR}" "${LOG_DIR}"
 
 SKILL_DIR="$(resolve_skill_dir)"
 cd "${SKILL_DIR}"
@@ -48,4 +52,14 @@ uv run scripts/benchmark.py \
   --runs "${RESOLVED_RUNS}" \
   --timeout-multiplier "${RESOLVED_TIMEOUT}" \
   --output-dir "${OUTPUT_DIR}" \
-  --no-upload
+  --no-upload \
+  2>&1 | tee "${RUN_LOG_FILE}"
+
+if [[ -f "${SKILL_DIR}/benchmark.log" ]]; then
+  cp "${SKILL_DIR}/benchmark.log" "${BENCHMARK_LOG_FILE}"
+fi
+
+echo "Run log saved to: ${RUN_LOG_FILE}"
+if [[ -f "${BENCHMARK_LOG_FILE}" ]]; then
+  echo "Benchmark log saved to: ${BENCHMARK_LOG_FILE}"
+fi
