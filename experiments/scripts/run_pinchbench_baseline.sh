@@ -30,6 +30,21 @@ done
 import_dotenv
 apply_ecoclaw_env
 
+ECOCLAW_WAS_ENABLED=0
+if openclaw plugins list 2>/dev/null | grep -qE '│ EcoClaw[[:space:]]+│ ecoclaw[[:space:]]+│ loaded[[:space:]]+│'; then
+  ECOCLAW_WAS_ENABLED=1
+fi
+
+restore_ecoclaw_plugin() {
+  if [[ "${ECOCLAW_WAS_ENABLED}" == "1" ]]; then
+    openclaw plugins enable ecoclaw >/dev/null 2>&1 || true
+  fi
+}
+
+trap restore_ecoclaw_plugin EXIT
+
+openclaw plugins disable ecoclaw >/dev/null 2>&1 || true
+
 MODEL_LIKE="${MODEL:-${ECOCLAW_MODEL:-claude-sonnet-4}}"
 JUDGE_LIKE="${JUDGE:-${ECOCLAW_JUDGE:-claude-opus-4.1}}"
 RESOLVED_MODEL="$(resolve_model_alias "${MODEL_LIKE}")"
