@@ -41,6 +41,30 @@ cp .env.example .env
 
 Detailed variable reference: [docs/env.md](docs/env.md)
 
+## Dataset Assets (Google Drive)
+
+Large dataset assets are not stored in git. After cloning, download the archives from Google Drive and extract them to:
+
+- `experiments/dataset/claw_eval/assets/`
+- `experiments/dataset/pinchbench/assets/`
+
+Recommended release structure on Drive:
+
+- `claw_eval_assets_YYYYMMDD.zip`
+- `pinchbench_assets_YYYYMMDD.zip`
+
+Maintain links in this section:
+
+- Claw Eval assets: `https://drive.google.com/drive/folders/1JXKLgfQ4Q3qSXEeOP5a3XjjmYS9t9pyc?usp=sharing`
+- PinchBench assets: `https://drive.google.com/drive/folders/1JXKLgfQ4Q3qSXEeOP5a3XjjmYS9t9pyc?usp=sharing`
+
+After extraction, verify:
+
+```bash
+ls experiments/dataset/claw_eval/assets
+ls experiments/dataset/pinchbench/assets
+```
+
 ## Compatibility Notes
 
 This repo uses a patched benchmark flow compared with upstream PinchBench scripts:
