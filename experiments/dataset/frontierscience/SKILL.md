@@ -4,13 +4,11 @@ description: Run frontierscience benchmarks to evaluate OpenClaw agent performan
 metadata:
   author: frontierscience
   version: "1.0.0"
-  homepage: https://frontierscience.com
-  repository: https://github.com/frontierscience/skill
 ---
 
 # Frontierscience Benchmark Skill
 
-Frontierscience measures how well LLM models perform as the brain of an OpenClaw agent. Results are collected on a public leaderboard at [frontierscience.com](https://frontierscience.com).
+Frontierscience measures how well LLM models perform as the brain of an OpenClaw agent. Results are collected on a public leaderboard at [frontierscience.com].
 
 ## Prerequisites
 
@@ -121,7 +119,7 @@ Create a markdown file in `tasks/` with filename format `task_<index>_<uuid>.md`
 
 ## Leaderboard
 
-View results at [frontierscience.com](https://frontierscience.com). The leaderboard shows:
+View results at [frontierscience.com]. The leaderboard shows:
 
 - Model rankings by overall score
 - Per-task breakdowns

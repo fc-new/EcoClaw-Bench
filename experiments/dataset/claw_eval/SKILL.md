@@ -4,13 +4,11 @@ description: Run claw-eval benchmarks to evaluate OpenClaw agent performance acr
 metadata:
   author: claw_eval
   version: "1.0.0"
-  homepage: https://claw_eval.com
-  repository: https://github.com/claw_eval/skill
 ---
 
 # claw-eval Benchmark Skill
 
-claw-eval measures how well LLM models perform as the brain of an OpenClaw agent. Results are collected on a public leaderboard at [claw_eval.com](https://claw_eval.com).
+claw-eval measures how well LLM models perform as the brain of an OpenClaw agent. Results are collected on a public leaderboard at [claw_eval.com].
 
 ## Prerequisites
 
@@ -24,55 +22,54 @@ claw-eval measures how well LLM models perform as the brain of an OpenClaw agent
 cd <skill_directory>
 
 # Run benchmark with a specific model
-uv run benchmark.py --model anthropic/claude-sonnet-4
+uv run scripts/benchmark.py --model anthropic/claude-sonnet-4
 
-# Run only automated tasks (faster)
-uv run benchmark.py --model anthropic/claude-sonnet-4 --suite automated-only
+# Run all tasks
+uv run scripts/benchmark.py --model anthropic/claude-sonnet-4 --suite all
 
-# Run specific tasks
-uv run benchmark.py --model anthropic/claude-sonnet-4 --suite task_01_calendar,task_02_stock
+# Run specific tasks by actual task IDs
+uv run scripts/benchmark.py --model anthropic/claude-sonnet-4 --suite task_000_t01zh_email_triage,task_071_t72_restaurant_menu_contact
 
 # Skip uploading results
-uv run benchmark.py --model anthropic/claude-sonnet-4 --no-upload
+uv run scripts/benchmark.py --model anthropic/claude-sonnet-4 --no-upload
 ```
 
-## Available Tasks (23)
+## Task Coverage (139)
 
-| Task | Category | Description |
-|------|----------|-------------|
-| `task_00_sanity` | Basic | Verify agent works |
-| `task_01_calendar` | Productivity | Calendar event creation |
-| `task_02_stock` | Research | Stock price lookup |
-| `task_03_blog` | Writing | Blog post creation |
-| `task_04_weather` | Coding | Weather script |
-| `task_05_summary` | Analysis | Document summarization |
-| `task_06_events` | Research | Conference research |
-| `task_07_email` | Writing | Email drafting |
-| `task_08_memory` | Memory | Context retrieval |
-| `task_09_files` | Files | File structure creation |
-| `task_10_workflow` | Integration | Multi-step API workflow |
-| `task_11_clawdhub` | Skills | ClawHub interaction |
-| `task_12_skill_search` | Skills | Skill discovery |
-| `task_13_image_gen` | Creative | Image generation |
-| `task_14_humanizer` | Writing | Text humanization |
-| `task_15_daily_summary` | Productivity | Daily digest |
-| `task_16_email_triage` | Email | Inbox triage |
-| `task_17_email_search` | Email | Email search |
-| `task_18_market_research` | Research | Market analysis |
-| `task_19_spreadsheet_summary` | Analysis | Spreadsheet analysis |
-| `task_20_eli5_pdf_summary` | Analysis | PDF simplification |
-| `task_21_openclaw_comprehension` | Knowledge | OpenClaw docs comprehension |
-| `task_22_second_brain` | Memory | Knowledge management |
+This dataset is not the old 23-task PinchBench list. It contains **139 real tasks** in `tasks/`, and every task is currently graded as `llm_judge`.
+
+Representative task bands:
+
+| Range | Theme | Examples |
+|------|------|---------|
+| `task_000`–`task_043` | Office workflows | email triage/reply, calendar scheduling, todo, CRM export, incident/postmortem, operations dashboard |
+| `task_044`–`task_070` | Research + engineering analysis | CVE/OSS/regulatory research, finance analysis, code/runtime debugging, paper/comprehension tasks |
+| `task_071`–`task_084` | Safety + OfficeQA | prompt/web/email injection defense, table/PDF-based quantitative QA |
+| `task_085`–`task_100` | PinchBench-style mixed tasks | planning/writing/memory/file/data tasks, SQLite/WAL recovery, reverse decoding |
+| `task_101`–`task_124` | Security + document extraction | XSS filter hardening, schema migration, packet decoding, clock/web tasks, chart/table extraction and reference verification |
+| `task_125`–`task_138` | Video multimodal tasks | movie recognition, paper/video understanding, interactive webpage generation, sports QA, subtitle OCR/timestamp and scene analysis |
+
+Category distribution is broad (examples): `finance`, `ops`, `office_qa`, `workflow`, `safety`, `security`, `doc_extraction`, `video_qa`, `video_ocr`, `multimodal_webpage`.
+
+Use this to inspect available tasks:
+
+```bash
+ls tasks/task_*.md
+```
 
 ## Command Line Options
 
 | Option | Description |
 |--------|-------------|
 | `--model` | Model identifier (e.g., `anthropic/claude-sonnet-4`) |
-| `--suite` | `all`, `automated-only`, or comma-separated task IDs |
+| `--suite` | `all`, `automated-only`, or comma-separated task IDs (`task_000...`) |
 | `--output-dir` | Results directory (default: `results/`) |
 | `--timeout-multiplier` | Scale task timeouts for slower models |
 | `--runs` | Number of runs per task for averaging |
+| `--parallel` | Number of isolated task runs to execute in parallel |
+| `--judge` | Judge model id (default uses Claude Opus) |
+| `--official-key` | Official submission key (or `PINCHBENCH_OFFICIAL_KEY`) |
+| `--verbose` / `-v` | Verbose logging |
 | `--no-upload` | Skip uploading to leaderboard |
 | `--register` | Request new API token for submissions |
 | `--upload FILE` | Upload previous results JSON |
@@ -83,10 +80,10 @@ To submit results to the leaderboard:
 
 ```bash
 # Register for an API token (one-time)
-uv run benchmark.py --register
+uv run scripts/benchmark.py --register
 
 # Run benchmark (auto-uploads with token)
-uv run benchmark.py --model anthropic/claude-sonnet-4
+uv run scripts/benchmark.py --model anthropic/claude-sonnet-4
 ```
 
 ## Results
@@ -116,7 +113,7 @@ Create a markdown file in `tasks/` following `TASK_TEMPLATE.md`. Each task needs
 
 ## Leaderboard
 
-View results at [claw_eval.com](https://claw_eval.com). The leaderboard shows:
+View results at [claw_eval.com]. The leaderboard shows:
 
 - Model rankings by overall score
 - Per-task breakdowns
