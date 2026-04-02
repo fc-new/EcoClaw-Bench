@@ -27,11 +27,15 @@ from typing import Dict, List, Optional, Any
 from lib_agent import (
     cleanup_agent_sessions,
     ensure_agent_exists,
+    ensure_multi_agent_exists,
     execute_openclaw_task,
     slugify_model,
 )
 from lib_grading import GradeResult, grade_task
 from lib_tasks import Task, TaskLoader
+
+
+DEFAULT_MULTI_AGENT_ROLES = ["researcher", "coder"]
 
 
 # Configure logging
@@ -250,6 +254,25 @@ def _parse_args() -> argparse.Namespace:
         metavar="KEY",
         help="Official key to mark submission as official (can also use PINCHBENCH_OFFICIAL_KEY env var)",
     )
+    parser.add_argument(
+        "--enable-multi-agent",
+        action="store_true",
+        default=False,
+        help="Enable multi-agent (subagent) mode: coordinator dispatches workers via sessions_spawn",
+    )
+    parser.add_argument(
+        "--multi-agent-roles",
+        type=str,
+        default=None,
+        help='Comma-separated worker roles (default: "researcher,coder"). Ignored when --agent-config is provided.',
+    )
+    parser.add_argument(
+        "--agent-config",
+        type=str,
+        default=None,
+        help="Path to a JSON file describing agent topology (models, skills, allowAgents per agent). "
+        "Overrides --multi-agent-roles when provided.",
+    )
     return parser.parse_args()
 
 
@@ -285,23 +308,42 @@ def _run_task_job(
     skill_dir: Path,
     verbose: bool,
     judge_model: Optional[str],
+    enable_multi_agent: bool = False,
+    multi_agent_roles: Optional[List[str]] = None,
+    agent_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     logger.info("\n%s", "=" * 80)
     logger.info(
-        "📋 Task %s/%s (Run %s/%s) [job %s]",
+        "📋 Task %s/%s (Run %s/%s) [job %s]%s",
         task_index,
         total_tasks,
         run_index + 1,
         runs_per_task,
         job_index,
+        " [multi-agent]" if enable_multi_agent else "",
     )
     logger.info("%s", "=" * 80)
 
     model_slug = slugify_model(model)
-    agent_id = f"bench-{model_slug}-{run_id}-j{job_index:04d}"
     agent_workspace = Path(f"/tmp/pinchbench/{run_id}/agent_workspace_j{job_index:04d}")
-    ensure_agent_exists(agent_id, model, agent_workspace)
-    cleanup_agent_sessions(agent_id)
+
+    # --- Multi-agent vs single-agent agent setup ---
+    multi_agent_ids: Optional[Dict[str, str]] = None
+    if enable_multi_agent:
+        roles = multi_agent_roles or DEFAULT_MULTI_AGENT_ROLES
+        multi_agent_ids = ensure_multi_agent_exists(
+            model_id=model,
+            run_id=run_id,
+            job_index=job_index,
+            workspace_dir=agent_workspace,
+            roles=roles,
+            agent_config=agent_config,
+        )
+        agent_id = multi_agent_ids["coordinator"]
+    else:
+        agent_id = f"bench-{model_slug}-{run_id}-j{job_index:04d}"
+        ensure_agent_exists(agent_id, model, agent_workspace)
+        cleanup_agent_sessions(agent_id)
 
     execution_error = None
     try:
@@ -314,6 +356,8 @@ def _run_task_job(
             skill_dir=skill_dir,
             agent_workspace=agent_workspace,
             verbose=verbose,
+            enable_multi_agent=enable_multi_agent,
+            multi_agent_ids=multi_agent_ids,
         )
     except Exception as exc:
         execution_error = str(exc)
@@ -722,6 +766,35 @@ def main():
         logger.warning("Invalid --parallel=%s, falling back to %s", args.parallel, parallel_jobs)
     logger.info("Parallel isolated jobs: %s", parallel_jobs)
 
+    # Multi-agent settings
+    enable_multi_agent = args.enable_multi_agent
+    multi_agent_roles: Optional[List[str]] = None
+    agent_config: Optional[Dict[str, Any]] = None
+
+    # Load agent config file if provided
+    agent_config_path = args.agent_config or os.environ.get("ECOCLAW_AGENT_CONFIG")
+    if agent_config_path:
+        agent_config_file = Path(agent_config_path)
+        if not agent_config_file.is_file():
+            logger.error("Agent config file not found: %s", agent_config_path)
+            sys.exit(1)
+        agent_config = json.loads(agent_config_file.read_text(encoding="utf-8"))
+        logger.info("Loaded agent config from %s", agent_config_path)
+        # When agent config is provided, force multi-agent on
+        enable_multi_agent = True
+
+    if enable_multi_agent:
+        if agent_config:
+            # Derive roles from config
+            config_agents = agent_config.get("agents", {}).get("list", [])
+            multi_agent_roles = [a.get("id", "worker") for a in config_agents if not a.get("default") and a.get("id") != "coordinator"]
+            logger.info("Multi-agent mode ENABLED (config-driven). Agents: %s",
+                        [a.get("id") for a in config_agents])
+        else:
+            roles_str = args.multi_agent_roles or os.environ.get("ECOCLAW_MULTI_AGENT_ROLES", "researcher,coder")
+            multi_agent_roles = [r.strip() for r in roles_str.split(",") if r.strip()]
+            logger.info("Multi-agent mode ENABLED. Roles: %s", multi_agent_roles)
+
     task_ids = _select_task_ids(runner.tasks, args.suite)
     results = []
     grades_by_task_id = {}
@@ -764,6 +837,9 @@ def main():
                     skill_dir=skill_dir,
                     verbose=args.verbose,
                     judge_model=args.judge,
+                    enable_multi_agent=enable_multi_agent,
+                    multi_agent_roles=multi_agent_roles,
+                    agent_config=agent_config,
                 )
             )
     else:
@@ -783,6 +859,9 @@ def main():
                     skill_dir=skill_dir,
                     verbose=args.verbose,
                     judge_model=args.judge,
+                    enable_multi_agent=enable_multi_agent,
+                    multi_agent_roles=multi_agent_roles,
+                    agent_config=agent_config,
                 ): job
                 for job in jobs
             }
@@ -881,6 +960,9 @@ def main():
         "timestamp": time.time(),
         "suite": args.suite,
         "runs_per_task": runs_per_task,
+        "enable_multi_agent": enable_multi_agent,
+        "multi_agent_roles": multi_agent_roles,
+        "agent_config_path": agent_config_path if agent_config else None,
         "tasks": task_entries,
         "efficiency": efficiency,
     }

@@ -38,13 +38,6 @@ apply_ecoclaw_env
 ensure_openclaw_gateway_running
 recover_stale_openclaw_config_backup
 
-if [[ -z "${ECOCLAW_SKILL_DIR:-}" && -d "${REPO_ROOT}/pinchbench-skill" ]]; then
-  export ECOCLAW_SKILL_DIR="${REPO_ROOT}/pinchbench-skill"
-fi
-if [[ -z "${ECOCLAW_SKILL_DIR:-}" && -d "${REPO_ROOT}/experiments/dataset/pinchbench" ]]; then
-  export ECOCLAW_SKILL_DIR="${REPO_ROOT}/experiments/dataset/pinchbench"
-fi
-
 ECOCLAW_WAS_ENABLED=0
 if openclaw plugins list 2>/dev/null | grep -qE '│ EcoClaw[[:space:]]+│ ecoclaw[[:space:]]+│ loaded[[:space:]]+│'; then
   ECOCLAW_WAS_ENABLED=1
@@ -60,21 +53,33 @@ trap restore_ecoclaw_plugin EXIT
 
 openclaw plugins disable ecoclaw >/dev/null 2>&1 || true
 
+if [[ -z "${ECOCLAW_SKILL_DIR:-}" && -d "${REPO_ROOT}/frontierscience-skill" ]]; then
+  export ECOCLAW_SKILL_DIR="${REPO_ROOT}/frontierscience-skill"
+fi
+if [[ -z "${ECOCLAW_SKILL_DIR:-}" && -d "${REPO_ROOT}/experiments/dataset/frontierscience" ]]; then
+  export ECOCLAW_SKILL_DIR="${REPO_ROOT}/experiments/dataset/frontierscience"
+fi
+
 MODEL_LIKE="${MODEL:-${ECOCLAW_MODEL:-tuzi/gpt-5.4}}"
 JUDGE_LIKE="${JUDGE:-${ECOCLAW_JUDGE:-tuzi/gpt-5.4}}"
 RESOLVED_MODEL="$(resolve_model_alias "${MODEL_LIKE}")"
 RESOLVED_JUDGE="$(resolve_model_alias "${JUDGE_LIKE}")"
-RESOLVED_SUITE="${SUITE:-${ECOCLAW_SUITE:-automated-only}}"
-RESOLVED_RUNS="${RUNS:-${ECOCLAW_RUNS:-3}}"
+RESOLVED_SUITE="${SUITE:-${ECOCLAW_SUITE:-all}}"
+RESOLVED_RUNS="${RUNS:-${ECOCLAW_RUNS:-1}}"
 RESOLVED_TIMEOUT="${TIMEOUT_MULTIPLIER:-${ECOCLAW_TIMEOUT_MULTIPLIER:-1.0}}"
-RESOLVED_PARALLEL="${PARALLEL:-${ECOCLAW_PARALLEL:-1}}"
+RESOLVED_PARALLEL="${PARALLEL:-${ECOCLAW_PARALLEL:-4}}"
 
 # Multi-agent: resolve from CLI flag or env var
 if [[ "${ENABLE_MULTI_AGENT}" == "0" ]] && [[ "${ECOCLAW_ENABLE_MULTI_AGENT:-false}" =~ ^(true|1|yes)$ ]]; then
   ENABLE_MULTI_AGENT=1
 fi
-RESOLVED_MULTI_AGENT_ROLES="${MULTI_AGENT_ROLES:-${ECOCLAW_MULTI_AGENT_ROLES:-researcher,coder}}"
+RESOLVED_MULTI_AGENT_ROLES="${MULTI_AGENT_ROLES:-${ECOCLAW_MULTI_AGENT_ROLES:-researcher,reviewer}}"
 RESOLVED_AGENT_CONFIG="${AGENT_CONFIG:-${ECOCLAW_AGENT_CONFIG:-}}"
+
+# Resolve to absolute path early (before any cd)
+if [[ -n "${RESOLVED_AGENT_CONFIG}" ]]; then
+  RESOLVED_AGENT_CONFIG="$(cd "$(dirname "${RESOLVED_AGENT_CONFIG}")" && pwd)/$(basename "${RESOLVED_AGENT_CONFIG}")"
+fi
 
 # If an agent config is provided, force multi-agent on
 if [[ -n "${RESOLVED_AGENT_CONFIG}" ]]; then
@@ -82,14 +87,14 @@ if [[ -n "${RESOLVED_AGENT_CONFIG}" ]]; then
 fi
 
 if [[ "${ENABLE_MULTI_AGENT}" == "1" ]]; then
-  OUTPUT_DIR="${REPO_ROOT}/results/raw/pinchbench/multi_agent"
+  OUTPUT_DIR="${REPO_ROOT}/results/raw/frontierscience/multi_agent"
 else
-  OUTPUT_DIR="${REPO_ROOT}/results/raw/pinchbench/baseline"
+  OUTPUT_DIR="${REPO_ROOT}/results/raw/frontierscience/baseline"
 fi
 LOG_DIR="${REPO_ROOT}/log"
 RUN_TAG="$(date +%Y%m%d_%H%M%S)"
-RUN_LOG_FILE="${LOG_DIR}/pinchbench_baseline_${RUN_TAG}.log"
-BENCHMARK_LOG_FILE="${LOG_DIR}/pinchbench_baseline_${RUN_TAG}_benchmark.log"
+RUN_LOG_FILE="${LOG_DIR}/frontierscience_baseline_${RUN_TAG}.log"
+BENCHMARK_LOG_FILE="${LOG_DIR}/frontierscience_baseline_${RUN_TAG}_benchmark.log"
 mkdir -p "${OUTPUT_DIR}" "${LOG_DIR}"
 
 # Multi-agent config injection
@@ -105,8 +110,8 @@ if [[ "${ENABLE_MULTI_AGENT}" == "1" ]]; then
     fi
     inject_agent_config_from_file "${RESOLVED_AGENT_CONFIG}" "${SKILLS_DIR}"
   else
-    RESOLVED_SUBAGENT_THINKING="${ECOCLAW_SUBAGENT_THINKING:-medium}"
-    RESOLVED_SUBAGENT_MAX_CONCURRENT="${ECOCLAW_SUBAGENT_MAX_CONCURRENT:-4}"
+    RESOLVED_SUBAGENT_THINKING="${ECOCLAW_SUBAGENT_THINKING:-high}"
+    RESOLVED_SUBAGENT_MAX_CONCURRENT="${ECOCLAW_SUBAGENT_MAX_CONCURRENT:-2}"
     inject_multi_agent_config "${RESOLVED_MODEL}" "${RESOLVED_SUBAGENT_THINKING}" "${RESOLVED_SUBAGENT_MAX_CONCURRENT}"
   fi
 fi
@@ -159,7 +164,7 @@ fi
 RESULT_JSON="$(latest_json_in_dir "${OUTPUT_DIR}" || true)"
 if [[ -n "${RESULT_JSON}" ]]; then
   COST_REPORT_DIR="${REPO_ROOT}/results/reports"
-  COST_REPORT_FILE="${COST_REPORT_DIR}/baseline_${RUN_TAG}_cost.json"
+  COST_REPORT_FILE="${COST_REPORT_DIR}/frontierscience_baseline_${RUN_TAG}_cost.json"
   mkdir -p "${COST_REPORT_DIR}"
   generate_cost_report_and_print_summary "${RESULT_JSON}" "${COST_REPORT_FILE}"
 else

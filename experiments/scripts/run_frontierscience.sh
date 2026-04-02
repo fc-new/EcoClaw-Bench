@@ -11,6 +11,9 @@ SUITE=""
 RUNS=""
 TIMEOUT_MULTIPLIER=""
 PARALLEL=""
+ENABLE_MULTI_AGENT=0
+MULTI_AGENT_ROLES=""
+AGENT_CONFIG=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -20,6 +23,9 @@ while [[ $# -gt 0 ]]; do
     --runs) RUNS="${2:-}"; shift 2 ;;
     --timeout-multiplier) TIMEOUT_MULTIPLIER="${2:-}"; shift 2 ;;
     --parallel) PARALLEL="${2:-}"; shift 2 ;;
+    --enable-multi-agent) ENABLE_MULTI_AGENT=1; shift ;;
+    --multi-agent-roles) MULTI_AGENT_ROLES="${2:-}"; shift 2 ;;
+    --agent-config) AGENT_CONFIG="${2:-}"; shift 2 ;;
     *)
       echo "Unknown argument: $1" >&2
       exit 1
@@ -29,26 +35,73 @@ done
 
 import_dotenv
 apply_ecoclaw_env
+ensure_openclaw_gateway_running
+recover_stale_openclaw_config_backup
 
 if [[ -z "${ECOCLAW_SKILL_DIR:-}" && -d "${REPO_ROOT}/frontierscience-skill" ]]; then
   export ECOCLAW_SKILL_DIR="${REPO_ROOT}/frontierscience-skill"
 fi
+if [[ -z "${ECOCLAW_SKILL_DIR:-}" && -d "${REPO_ROOT}/experiments/dataset/frontierscience" ]]; then
+  export ECOCLAW_SKILL_DIR="${REPO_ROOT}/experiments/dataset/frontierscience"
+fi
 
-MODEL_LIKE="${MODEL:-${ECOCLAW_MODEL:-gmn/gpt-5.4}}"
-JUDGE_LIKE="${JUDGE:-${ECOCLAW_JUDGE:-gmn/gpt-5.4}}"
+MODEL_LIKE="${MODEL:-${ECOCLAW_MODEL:-tuzi/gpt-5.4}}"
+JUDGE_LIKE="${JUDGE:-${ECOCLAW_JUDGE:-tuzi/gpt-5.4}}"
 RESOLVED_MODEL="$(resolve_model_alias "${MODEL_LIKE}")"
 RESOLVED_JUDGE="$(resolve_model_alias "${JUDGE_LIKE}")"
 RESOLVED_SUITE="${SUITE:-${ECOCLAW_SUITE:-all}}"
 RESOLVED_RUNS="${RUNS:-${ECOCLAW_RUNS:-1}}"
 RESOLVED_TIMEOUT="${TIMEOUT_MULTIPLIER:-${ECOCLAW_TIMEOUT_MULTIPLIER:-1.0}}"
-RESOLVED_PARALLEL="${PARALLEL:-${ECOCLAW_PARALLEL:-4}}"
+RESOLVED_PARALLEL="${PARALLEL:-${ECOCLAW_PARALLEL:-1}}"
 
-OUTPUT_DIR="${REPO_ROOT}/results/raw/frontierscience/ecoclaw"
+# Multi-agent: resolve from CLI flag or env var
+if [[ "${ENABLE_MULTI_AGENT}" == "0" ]] && [[ "${ECOCLAW_ENABLE_MULTI_AGENT:-false}" =~ ^(true|1|yes)$ ]]; then
+  ENABLE_MULTI_AGENT=1
+fi
+RESOLVED_MULTI_AGENT_ROLES="${MULTI_AGENT_ROLES:-${ECOCLAW_MULTI_AGENT_ROLES:-researcher,reviewer}}"
+RESOLVED_AGENT_CONFIG="${AGENT_CONFIG:-${ECOCLAW_AGENT_CONFIG:-}}"
+
+# Resolve to absolute path early (before any cd)
+if [[ -n "${RESOLVED_AGENT_CONFIG}" ]]; then
+  RESOLVED_AGENT_CONFIG="$(cd "$(dirname "${RESOLVED_AGENT_CONFIG}")" && pwd)/$(basename "${RESOLVED_AGENT_CONFIG}")"
+fi
+
+# If an agent config is provided, force multi-agent on
+if [[ -n "${RESOLVED_AGENT_CONFIG}" ]]; then
+  ENABLE_MULTI_AGENT=1
+fi
+
+if [[ "${ENABLE_MULTI_AGENT}" == "1" ]]; then
+  OUTPUT_DIR="${REPO_ROOT}/results/raw/frontierscience/multi_agent"
+else
+  OUTPUT_DIR="${REPO_ROOT}/results/raw/frontierscience/ecoclaw"
+fi
 LOG_DIR="${REPO_ROOT}/log"
 RUN_TAG="$(date +%Y%m%d_%H%M%S)"
 RUN_LOG_FILE="${LOG_DIR}/frontierscience_ecoclaw_${RUN_TAG}.log"
 BENCHMARK_LOG_FILE="${LOG_DIR}/frontierscience_ecoclaw_${RUN_TAG}_benchmark.log"
 mkdir -p "${OUTPUT_DIR}" "${LOG_DIR}"
+
+# Multi-agent config injection
+if [[ "${ENABLE_MULTI_AGENT}" == "1" ]]; then
+  backup_openclaw_config
+  if [[ -n "${RESOLVED_AGENT_CONFIG}" ]]; then
+    # Resolve skills dir: experiments/skills/ relative to the agent-config location
+    AGENT_CONFIG_DIR="$(cd "$(dirname "${RESOLVED_AGENT_CONFIG}")" && pwd)"
+    SKILLS_DIR="${AGENT_CONFIG_DIR}/../skills"
+    if [[ -d "${SKILLS_DIR}" ]]; then
+      SKILLS_DIR="$(cd "${SKILLS_DIR}" && pwd)"
+    else
+      SKILLS_DIR=""
+    fi
+    inject_agent_config_from_file "${RESOLVED_AGENT_CONFIG}" "${SKILLS_DIR}"
+  else
+    RESOLVED_SUBAGENT_THINKING="${ECOCLAW_SUBAGENT_THINKING:-high}"
+    RESOLVED_SUBAGENT_MAX_CONCURRENT="${ECOCLAW_SUBAGENT_MAX_CONCURRENT:-2}"
+    inject_multi_agent_config "${RESOLVED_MODEL}" "${RESOLVED_SUBAGENT_THINKING}" "${RESOLVED_SUBAGENT_MAX_CONCURRENT}"
+  fi
+  trap 'restore_openclaw_config || true' EXIT
+fi
 
 # echo "Context saver disabled by script (commented out intentionally)"
 
@@ -126,23 +179,27 @@ mkdir -p "${OUTPUT_DIR}" "${LOG_DIR}"
 SKILL_DIR="$(resolve_skill_dir)"
 cd "${SKILL_DIR}"
 
-PARALLEL_ARGS=()
-if uv run scripts/benchmark.py --help 2>/dev/null | grep -q -- "--parallel"; then
-  PARALLEL_ARGS=(--parallel "${RESOLVED_PARALLEL}")
-elif [[ "${RESOLVED_PARALLEL}" != "1" ]]; then
-  echo "Current benchmark.py does not support --parallel, but requested parallel=${RESOLVED_PARALLEL}" >&2
-  exit 1
+# Build benchmark.py arguments
+BENCH_ARGS=(
+  --model "${RESOLVED_MODEL}"
+  --judge "${RESOLVED_JUDGE}"
+  --suite "${RESOLVED_SUITE}"
+  --runs "${RESOLVED_RUNS}"
+  --parallel "${RESOLVED_PARALLEL}"
+  --timeout-multiplier "${RESOLVED_TIMEOUT}"
+  --output-dir "${OUTPUT_DIR}"
+  --no-upload
+)
+if [[ "${ENABLE_MULTI_AGENT}" == "1" ]]; then
+  BENCH_ARGS+=(--enable-multi-agent)
+  if [[ -n "${RESOLVED_AGENT_CONFIG}" ]]; then
+    BENCH_ARGS+=(--agent-config "${RESOLVED_AGENT_CONFIG}")
+  else
+    BENCH_ARGS+=(--multi-agent-roles "${RESOLVED_MULTI_AGENT_ROLES}")
+  fi
 fi
 
-uv run scripts/benchmark.py \
-  --model "${RESOLVED_MODEL}" \
-  --judge "${RESOLVED_JUDGE}" \
-  --suite "${RESOLVED_SUITE}" \
-  --runs "${RESOLVED_RUNS}" \
-  "${PARALLEL_ARGS[@]}" \
-  --timeout-multiplier "${RESOLVED_TIMEOUT}" \
-  --output-dir "${OUTPUT_DIR}" \
-  --no-upload \
+uv run scripts/benchmark.py "${BENCH_ARGS[@]}" \
   2>&1 | tee "${RUN_LOG_FILE}"
 
 if [[ -f "${SKILL_DIR}/benchmark.log" ]]; then

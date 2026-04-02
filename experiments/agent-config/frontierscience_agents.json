@@ -1,0 +1,70 @@
+{
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "tuzi/gpt-5.4",
+        "fallbacks": [
+          "custom-llm/gemini-2.5-flash",
+          "custom-llm/claude-sonnet-4"
+        ]
+      },
+      "subagents": {
+        "model": "tuzi/gpt-5.4",
+        "thinking": "high",
+        "maxConcurrent": 2,
+        "archiveAfterMinutes": 30
+      },
+      "sandbox": {
+        "sessionToolsVisibility": "spawned"
+      }
+    },
+    "list": [
+      {
+        "id": "coordinator",
+        "default": true,
+        "name": "Orchestrator",
+        "model": "tuzi/gpt-5.4",
+        "skills": [
+          "workflow-orchestration-patterns",
+          "summarize",
+          "session-logs",
+          "deep-research"
+        ],
+        "subagents": {
+          "allowAgents": ["researcher", "reviewer"]
+        }
+      },
+      {
+        "id": "researcher",
+        "name": "Research Agent",
+        "model": "tuzi/gpt-5.4",
+        "skills": [
+          "tavily",
+          "academic-researcher",
+          "sympy",
+          "hypothesis-generation",
+          "plotly",
+          "math-olympiad"
+        ]
+      },
+      {
+        "id": "reviewer",
+        "name": "Science Reviewer",
+        "model": "tuzi/gpt-5.4",
+        "skills": [
+          "scientific-writing",
+          "citation-management",
+          "data-analyst",
+          "summarize"
+        ]
+      }
+    ]
+  },
+  "tools": {
+    "subagents": {
+      "tools": {
+        "deny": ["browser"]
+      }
+    }
+  }
+}

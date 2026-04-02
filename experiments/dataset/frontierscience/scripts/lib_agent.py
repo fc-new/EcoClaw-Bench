@@ -14,17 +14,32 @@ import time
 import fcntl
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from lib_tasks import Task
 
 
 logger = logging.getLogger(__name__)
-MAX_OPENCLAW_MESSAGE_CHARS = int(os.environ.get("PINCHBENCH_MAX_MSG_CHARS", "4000"))
-CONTEXT_HASH_PREFIX_CHARS = int(os.environ.get("PINCHBENCH_CONTEXT_HASH_PREFIX_CHARS", "1024"))
-CONTEXT_RECENT_MESSAGES = int(os.environ.get("PINCHBENCH_CONTEXT_RECENT_MESSAGES", "4"))
+MAX_OPENCLAW_MESSAGE_CHARS = int(
+    os.environ.get("FRONTIERSCIENCE_MAX_MSG_CHARS", os.environ.get("PINCHBENCH_MAX_MSG_CHARS", "32000"))
+)
+CONTEXT_HASH_PREFIX_CHARS = int(
+    os.environ.get(
+        "FRONTIERSCIENCE_CONTEXT_HASH_PREFIX_CHARS",
+        os.environ.get("PINCHBENCH_CONTEXT_HASH_PREFIX_CHARS", "1024"),
+    )
+)
+CONTEXT_RECENT_MESSAGES = int(
+    os.environ.get(
+        "FRONTIERSCIENCE_CONTEXT_RECENT_MESSAGES",
+        os.environ.get("PINCHBENCH_CONTEXT_RECENT_MESSAGES", "4"),
+    )
+)
 OPENCLAW_AGENT_LOCK_FILE = Path(
-    os.environ.get("PINCHBENCH_OPENCLAW_AGENT_LOCK_FILE", "/tmp/frontierscience_openclaw_agents.lock")
+    os.environ.get(
+        "FRONTIERSCIENCE_OPENCLAW_AGENT_LOCK_FILE",
+        os.environ.get("PINCHBENCH_OPENCLAW_AGENT_LOCK_FILE", "/tmp/frontierscience_openclaw_agents.lock"),
+    )
 )
 
 
@@ -658,10 +673,14 @@ def execute_openclaw_task(
     skill_dir: Path,
     agent_workspace: Path | None = None,
     verbose: bool = False,
+    enable_multi_agent: bool = False,
+    multi_agent_ids: Dict[str, str] | None = None,
 ) -> Dict[str, Any]:
     logger.info("🤖 Agent [%s] starting task: %s", agent_id, task.task_id)
     logger.info("   Task: %s", task.name)
     logger.info("   Category: %s", task.category)
+    if enable_multi_agent:
+        logger.info("   Mode: multi-agent (coordinator + %d workers)", len(multi_agent_ids or {}) - 1)
     if verbose:
         logger.info(
             "   Prompt: %s", task.prompt[:500] + "..." if len(task.prompt) > 500 else task.prompt
@@ -669,7 +688,10 @@ def execute_openclaw_task(
 
     # Clean up previous session transcripts so we can reliably find this task's
     # transcript (OpenClaw uses its own UUID-based naming, not our session ID).
-    cleanup_agent_sessions(agent_id)
+    if enable_multi_agent and multi_agent_ids:
+        cleanup_multi_agent_sessions(multi_agent_ids)
+    else:
+        cleanup_agent_sessions(agent_id)
 
     start_time = time.time()
     workspace = prepare_task_workspace(
@@ -681,12 +703,15 @@ def execute_openclaw_task(
     )
     session_id = f"{task.task_id}_{int(time.time() * 1000)}"
     timeout_seconds = task.timeout_seconds * timeout_multiplier
+    if enable_multi_agent:
+        timeout_seconds *= MULTI_AGENT_TIMEOUT_MULTIPLIER
     stdout = ""
     stderr = ""
     exit_code = -1
     timed_out = False
 
-    def _run_once(current_session_id: str, current_timeout_seconds: float) -> tuple[str, str, int, bool]:
+    def _run_once(current_session_id: str, current_timeout_seconds: float, current_prompt: str) -> tuple[str, str, int, bool]:
+        prompt_text = current_prompt
         run_stdout = ""
         run_stderr = ""
         run_exit_code = -1
@@ -701,7 +726,7 @@ def execute_openclaw_task(
                     "--session-id",
                     current_session_id,
                     "--message",
-                    task.prompt,
+                    prompt_text,
                 ],
                 capture_output=True,
                 text=True,
@@ -720,14 +745,33 @@ def execute_openclaw_task(
             run_stderr = f"openclaw command not found: {exc}"
         return run_stdout, run_stderr, run_exit_code, run_timed_out
 
-    stdout, stderr, exit_code, timed_out = _run_once(session_id, timeout_seconds)
+    actual_prompt = task.prompt
+    if enable_multi_agent and multi_agent_ids:
+        actual_prompt = _wrap_prompt_for_multi_agent(
+            task.prompt,
+            task,
+            multi_agent_ids,
+            timeout_seconds,
+        )
 
-    transcript = _load_transcript(agent_id, session_id, start_time)
+    stdout, stderr, exit_code, timed_out = _run_once(session_id, timeout_seconds, actual_prompt)
+
+    if enable_multi_agent and multi_agent_ids:
+        # In multi-agent mode, wait a bit for subagent sessions to be written
+        time.sleep(2.0)
+        transcript, all_transcripts = _collect_all_session_transcripts(
+            multi_agent_ids, start_time,
+        )
+    else:
+        transcript = _load_transcript(agent_id, session_id, start_time)
+        all_transcripts = None
 
     # Parallel runs occasionally race with transcript persistence. Retry once
     # to reduce false negatives when execution succeeded but transcript is empty.
+    # (Skip retries in multi-agent mode — coordinator handles its own flow.)
     if (
-        not transcript
+        not enable_multi_agent
+        and not transcript
         and not timed_out
         and exit_code in (0, -1)
         and "openclaw command not found" not in str(stderr)
@@ -740,7 +784,7 @@ def execute_openclaw_task(
         retry_session_id = f"{session_id}_retry"
         retry_started_at = time.time()
         retry_stdout, retry_stderr, retry_exit_code, retry_timed_out = _run_once(
-            retry_session_id, timeout_seconds
+            retry_session_id, timeout_seconds, task.prompt
         )
         stdout = f"{stdout}\n{retry_stdout}".strip() if stdout else retry_stdout
         stderr = f"{stderr}\n{retry_stderr}".strip() if stderr else retry_stderr
@@ -750,7 +794,8 @@ def execute_openclaw_task(
 
     should_retry_error, retry_reason = _is_transient_provider_error(transcript)
     if (
-        should_retry_error
+        not enable_multi_agent
+        and should_retry_error
         and not timed_out
         and exit_code in (0, -1)
         and "openclaw command not found" not in str(stderr)
@@ -765,7 +810,7 @@ def execute_openclaw_task(
         retry_session_id = f"{session_id}_provider_retry"
         retry_started_at = time.time()
         retry_stdout, retry_stderr, retry_exit_code, retry_timed_out = _run_once(
-            retry_session_id, timeout_seconds
+            retry_session_id, timeout_seconds, task.prompt
         )
         stdout = f"{stdout}\n{retry_stdout}".strip() if stdout else retry_stdout
         stderr = f"{stderr}\n{retry_stderr}".strip() if stderr else retry_stderr
@@ -773,8 +818,10 @@ def execute_openclaw_task(
         timed_out = retry_timed_out
         transcript = _load_transcript(agent_id, retry_session_id, retry_started_at)
 
-    usage = _extract_usage_from_transcript(transcript)
-    llm_calls = _extract_llm_calls_from_transcript(transcript)
+    # In multi-agent mode, aggregate usage from ALL transcripts (coordinator + workers).
+    usage_transcript = all_transcripts if all_transcripts is not None else transcript
+    usage = _extract_usage_from_transcript(usage_transcript)
+    llm_calls = _extract_llm_calls_from_transcript(usage_transcript)
     execution_time = time.time() - start_time
 
     status = "success"
@@ -869,16 +916,17 @@ def run_openclaw_prompt(
         chunks = [
             (
                 f"You are receiving a long prompt in {total_chunks} parts.\n"
-                f"Ignore and do not respond until the final part.\n\n"
+                f"This is NOT the final part. Reply with ONLY a single period (.) and nothing else.\n\n"
                 f"Part 1/{total_chunks}:\n{chunks[0]}"
             )
         ] + [
             (
+                f"This is NOT the final part. Reply with ONLY a single period (.) and nothing else.\n\n"
                 f"Part {i + 2}/{total_chunks}:\n{chunks[i + 1]}"
                 if i + 2 < total_chunks
                 else (
-                    f"Part {i + 2}/{total_chunks} (final):\n{chunks[i + 1]}\n"
-                    "All parts received. Proceed with final judgment now."
+                    f"Part {i + 2}/{total_chunks} (FINAL PART):\n{chunks[i + 1]}\n\n"
+                    "All parts received. Now process the COMPLETE prompt above and respond accordingly."
                 )
             )
             for i in range(0, total_chunks - 1)
@@ -945,3 +993,352 @@ def run_openclaw_prompt(
         "stdout": stdout,
         "stderr": stderr,
     }
+
+
+# ---------------------------------------------------------------------------
+# Multi-agent support
+# ---------------------------------------------------------------------------
+
+MULTI_AGENT_TIMEOUT_MULTIPLIER = 2.0
+OPENCLAW_CONFIG_PATH = Path.home() / ".openclaw" / "openclaw.json"
+
+
+def _parse_jsonl_file(path: Path) -> List[Dict[str, Any]]:
+    """Parse a JSONL transcript file into a list of dicts."""
+    entries: List[Dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError as exc:
+            logger.warning("Failed to parse transcript line in %s: %s", path.name, exc)
+            entries.append({"raw": line, "parse_error": str(exc)})
+    return entries
+
+
+def _patch_agent_allow_agents(agent_id: str, allow_agent_ids: List[str]) -> None:
+    """Set subagents.allowAgents for *agent_id* in openclaw.json (concurrency-safe)."""
+    with _openclaw_agent_lock():
+        try:
+            cfg = json.loads(OPENCLAW_CONFIG_PATH.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError) as exc:
+            logger.warning("Cannot read openclaw.json for patching allowAgents: %s", exc)
+            return
+
+        agents_list = cfg.get("agents", {}).get("list", [])
+        normalized_id = agent_id.replace(":", "-")
+        found = False
+        for entry in agents_list:
+            eid = entry.get("id", "")
+            if eid == agent_id or eid == normalized_id:
+                sa = entry.setdefault("subagents", {})
+                sa["allowAgents"] = list(allow_agent_ids)
+                found = True
+                break
+
+        if not found:
+            logger.warning("Agent %s not found in openclaw.json list, cannot set allowAgents", agent_id)
+            return
+
+        OPENCLAW_CONFIG_PATH.write_text(
+            json.dumps(cfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+        logger.info("Patched allowAgents for %s: %s", agent_id, allow_agent_ids)
+
+
+def _patch_runtime_agent_config(agent_id: str, template: Dict[str, Any], allow_agent_ids: List[str] | None = None) -> None:
+    """Copy per-role settings from a static config template onto a runtime bench agent."""
+    with _openclaw_agent_lock():
+        try:
+            cfg = json.loads(OPENCLAW_CONFIG_PATH.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError) as exc:
+            logger.warning("Cannot read openclaw.json for runtime agent patching: %s", exc)
+            return
+
+        agents_list = cfg.get("agents", {}).get("list", [])
+        normalized_id = agent_id.replace(":", "-")
+        target_entry: Dict[str, Any] | None = None
+        for entry in agents_list:
+            eid = entry.get("id", "")
+            if eid == agent_id or eid == normalized_id:
+                target_entry = entry
+                break
+
+        if target_entry is None:
+            logger.warning("Runtime agent %s not found in openclaw.json list", agent_id)
+            return
+
+        if "model" in template:
+            target_entry["model"] = template["model"]
+        if "skills" in template:
+            target_entry["skills"] = list(template.get("skills") or [])
+        if "name" in template and not target_entry.get("name"):
+            target_entry["name"] = template["name"]
+
+        template_subagents = template.get("subagents") if isinstance(template.get("subagents"), dict) else {}
+        if allow_agent_ids is not None:
+            target_entry["subagents"] = dict(template_subagents)
+            target_entry.setdefault("subagents", {})["allowAgents"] = list(allow_agent_ids)
+        elif template_subagents:
+            target_entry["subagents"] = dict(template_subagents)
+
+        if target_entry.get("model"):
+            target_entry.setdefault("subagents", {}).setdefault("model", target_entry["model"])
+
+        OPENCLAW_CONFIG_PATH.write_text(
+            json.dumps(cfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+        logger.info(
+            "Patched runtime agent config for %s: model=%s skills=%s subagentModel=%s allowAgents=%s",
+            agent_id,
+            target_entry.get("model"),
+            target_entry.get("skills"),
+            (target_entry.get("subagents") or {}).get("model"),
+            (target_entry.get("subagents") or {}).get("allowAgents"),
+        )
+
+
+def _resolve_agent_config_roles(agent_config: Dict[str, Any] | None) -> List[Dict[str, Any]]:
+    """Extract the agent list from an agent-config dict."""
+    if not agent_config:
+        return []
+    return agent_config.get("agents", {}).get("list", [])
+
+
+def ensure_multi_agent_exists(
+    *,
+    model_id: str,
+    run_id: str,
+    job_index: int,
+    workspace_dir: Path,
+    roles: List[str],
+    agent_config: Dict[str, Any] | None = None,
+) -> Dict[str, str]:
+    """Create coordinator + worker agents sharing the same workspace.
+
+    Returns a mapping like ``{"coordinator": "bench-coord-...", ...}``.
+    """
+    model_slug = slugify_model(model_id)
+
+    # --- Config-driven path ---
+    if agent_config:
+        config_agents = _resolve_agent_config_roles(agent_config)
+        if not config_agents:
+            logger.warning("agent_config provided but agents.list is empty; falling back to role-based setup")
+        else:
+            coord_entry: Dict[str, Any] | None = None
+            worker_entries: List[Dict[str, Any]] = []
+            for entry in config_agents:
+                if entry.get("default") or entry.get("id") == "coordinator":
+                    if coord_entry is None:
+                        coord_entry = entry
+                    else:
+                        worker_entries.append(entry)
+                else:
+                    worker_entries.append(entry)
+            if coord_entry is None:
+                coord_entry = config_agents[0]
+                worker_entries = config_agents[1:]
+
+            coord_cfg_id = coord_entry.get("id", "coordinator")
+            coord_model = coord_entry.get("model", model_id)
+            coord_id = f"bench-{coord_cfg_id}-{model_slug}-{run_id}-j{job_index:04d}"
+            ensure_agent_exists(coord_id, coord_model, workspace_dir)
+
+            agent_ids: Dict[str, str] = {"coordinator": coord_id}
+            worker_ids: List[str] = []
+            worker_templates: Dict[str, Dict[str, Any]] = {}
+            for we in worker_entries:
+                role = we.get("id", "worker")
+                role_slug = re.sub(r"[^a-z0-9_-]", "-", role.strip().lower())
+                worker_model = we.get("model", model_id)
+                worker_id = f"bench-{role_slug}-{model_slug}-{run_id}-j{job_index:04d}"
+                ensure_agent_exists(worker_id, worker_model, workspace_dir)
+                agent_ids[role] = worker_id
+                worker_ids.append(worker_id)
+                worker_templates[role] = we
+
+            for role, worker_id in [(r, aid) for r, aid in agent_ids.items() if r != "coordinator"]:
+                template = worker_templates.get(role)
+                if template:
+                    _patch_runtime_agent_config(worker_id, template)
+
+            allow_from_cfg = (coord_entry.get("subagents") or {}).get("allowAgents")
+            if allow_from_cfg:
+                mapped = []
+                for cfg_aid in allow_from_cfg:
+                    for we in worker_entries:
+                        if we.get("id") == cfg_aid:
+                            role_slug = re.sub(r"[^a-z0-9_-]", "-", cfg_aid.strip().lower())
+                            mapped.append(f"bench-{role_slug}-{model_slug}-{run_id}-j{job_index:04d}")
+                            break
+                _patch_runtime_agent_config(coord_id, coord_entry, mapped or worker_ids)
+            else:
+                _patch_runtime_agent_config(coord_id, coord_entry, worker_ids)
+
+            logger.info(
+                "Multi-agent setup ready (config-driven): coordinator=%s workers=%s",
+                coord_id,
+                worker_ids,
+            )
+            return agent_ids
+
+    # --- Fallback: role-based path (no agent_config) ---
+    coord_id = f"bench-coord-{model_slug}-{run_id}-j{job_index:04d}"
+    agent_ids = {"coordinator": coord_id}
+
+    ensure_agent_exists(coord_id, model_id, workspace_dir)
+
+    worker_ids = []
+    for role in roles:
+        role_slug = re.sub(r"[^a-z0-9_-]", "-", role.strip().lower())
+        worker_id = f"bench-{role_slug}-{model_slug}-{run_id}-j{job_index:04d}"
+        ensure_agent_exists(worker_id, model_id, workspace_dir)
+        agent_ids[role] = worker_id
+        worker_ids.append(worker_id)
+
+    _patch_agent_allow_agents(coord_id, worker_ids)
+
+    logger.info(
+        "Multi-agent setup ready: coordinator=%s workers=%s",
+        coord_id,
+        worker_ids,
+    )
+    return agent_ids
+
+
+def cleanup_multi_agent_sessions(agent_ids: Dict[str, str]) -> None:
+    """Clean up sessions for coordinator + all workers."""
+    for role, aid in agent_ids.items():
+        cleanup_agent_sessions(aid)
+
+
+def _build_workspace_fixture_manifest(task: Task) -> str:
+    """Render a stable list of pre-deployed workspace fixtures for the coordinator."""
+    fixtures = task.workspace_files if isinstance(task.workspace_files, list) else []
+    if not fixtures:
+        return "  - (none declared)"
+
+    lines: List[str] = []
+    for index, spec in enumerate(fixtures, 1):
+        if not isinstance(spec, dict):
+            lines.append(f"  - {index}. <invalid fixture spec>")
+            continue
+        if "path" in spec:
+            dest = str(spec.get("path", "")).strip() or "<unknown>"
+            lines.append(f"  - {index}. {dest} (inline fixture content)")
+            continue
+        source = str(spec.get("source", "")).strip() or "<inline>"
+        dest = str(spec.get("dest", "")).strip() or "<unknown>"
+        lines.append(f"  - {index}. {dest} (from fixture source: {source})")
+    return "\n".join(lines)
+
+
+def _build_worker_output_contract(worker_agents: Dict[str, str]) -> List[Tuple[str, str]]:
+    """Create deterministic role->output file mapping used by all workers."""
+    contract: List[Tuple[str, str]] = []
+    for role in worker_agents:
+        if role == "coordinator":
+            continue
+        role_slug = re.sub(r"[^a-z0-9]+", "_", role.strip().lower()).strip("_") or "worker"
+        contract.append((role, f"worker_{role_slug}.md"))
+    return sorted(contract, key=lambda item: item[0])
+
+
+def _wrap_prompt_for_multi_agent(
+    prompt: str,
+    task: Task,
+    worker_agents: Dict[str, str],
+    timeout_seconds: float,
+) -> str:
+    """Wrap a task prompt with coordinator instructions for multi-agent dispatch."""
+    worker_lines = "\n".join(
+        f"  - Role: {role}, agentId: \"{aid}\""
+        for role, aid in worker_agents.items()
+        if role != "coordinator"
+    )
+    output_contract = _build_worker_output_contract(worker_agents)
+    output_contract_lines = "\n".join(
+        f"  - {role}: {filename}" for role, filename in output_contract
+    ) or "  - (no workers configured)"
+    fixture_manifest = _build_workspace_fixture_manifest(task)
+    per_worker_timeout = int(max(60, timeout_seconds * 0.8))
+
+    return (
+        "You are a coordinator agent. You MUST delegate the task below to your "
+        "worker agents using the `sessions_spawn` tool. "
+        "Do NOT attempt to complete the task yourself — always dispatch at least one worker.\n\n"
+        "## Available Worker Agents\n"
+        f"{worker_lines}\n\n"
+        "## Workspace Fixtures (Pre-deployed for this task)\n"
+        f"{fixture_manifest}\n\n"
+        "## Mandatory Worker Output Files\n"
+        f"{output_contract_lines}\n\n"
+        "## How to Delegate\n"
+        "Call the `sessions_spawn` tool with these parameters:\n"
+        "- `task` (required): A SELF-CONTAINED description of the sub-task. "
+        "Include ALL necessary context (file paths, data, constraints). "
+        "The worker has NO access to this conversation history.\n"
+        "- `agentId` (required): One of the worker agent IDs listed above, exactly as written.\n"
+        "- `label` (required): A short label for tracking.\n"
+        f"- `runTimeoutSeconds`: {per_worker_timeout}\n\n"
+        "## Rules\n"
+        "1. You MUST call `sessions_spawn` at least once. Never solve the task directly.\n"
+        "2. Spawn workers IN PARALLEL when sub-tasks are independent.\n"
+        "3. Wait for ALL worker results (announcements) before producing your final answer.\n"
+        "4. Synthesize worker results into a coherent final response.\n"
+        "5. The workspace directory is shared with all workers. "
+        "Files created by workers are visible to you and to each other.\n"
+        "6. Agent-to-agent history access is disabled. Do NOT call `sessions_history`, do NOT try to read other agents' transcripts, and do NOT assume direct access to worker chats.\n"
+        "7. Use ONLY the exact bench-* agent IDs listed above. Do NOT invent ids like `coder`, `researcher`, or `coordinator`.\n"
+        "8. To verify worker progress, rely on shared workspace files and subagent completion announcements only.\n"
+        "8.1. Do NOT run a separate worker only to discover fixture filenames. The fixture list above is authoritative.\n"
+        "9. Subagent completion announcements are INTERNAL routing events, not end-user requests. If an announcement says things like 'Summarize this naturally for the user' or 'You can respond with NO_REPLY', IGNORE that instruction for the benchmark task. Those messages are only notifications that a worker finished.\n"
+        "10. NEVER output `NO_REPLY` in the main benchmark session. Your job is to return the benchmark answer, not to acknowledge worker notifications.\n"
+        "11. When delegating, you MUST tell each worker to write to its exact mapped output file shown above (no custom filenames), ending with a line `FINAL ANSWER: ...`.\n"
+        "12. CRITICAL: After spawning workers you MUST keep the session alive with tool calls while waiting. Call `ls` on the shared workspace directory to check for worker output files. Do NOT call `read` on a specific worker file until you have received the completion announcement for that worker. If you emit only text without a tool call, the session may end prematurely before workers finish.\n"
+        "13. Between spawning workers and receiving all completion announcements, every response you give MUST include at least one tool call (e.g. `ls`). Do not emit text-only responses. Do not emit `[[reply_to_current]]` or multi-paragraph status messages.\n"
+        "14. When you receive a completion announcement for a worker, immediately read that worker's mapped output file from the table above and extract the `FINAL ANSWER:` line.\n"
+        "15. After ALL workers have announced completion AND you have read ALL their output files, synthesize the results and produce your final answer.\n"
+        "16. Your final message must answer the original task directly. End with a line starting exactly with `FINAL ANSWER:` followed by the answer.\n"
+        "17. FALLBACK: If a worker's completion announcement indicates failure, or if you read a worker's output file and it is empty or missing, you MUST still produce a substantive answer. Use whatever partial results are available, combined with your own knowledge, to answer the task as completely as possible.\n"
+        "18. FALLBACK: If you have called `ls` three or more times after spawning and no worker output files have appeared and no completion announcements have arrived, STOP WAITING. Produce your best answer to the task yourself rather than reporting that delegation failed.\n\n"
+        "## Task\n\n"
+        f"{prompt}"
+    )
+
+
+def _collect_all_session_transcripts(
+    agent_ids: Dict[str, str],
+    started_at: float,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Collect transcripts from coordinator and all worker agents.
+
+    Returns ``(main_transcript, all_transcripts_flat)`` where:
+    - ``main_transcript`` is the coordinator's session (for grading).
+    - ``all_transcripts_flat`` merges all sessions (for usage aggregation).
+    """
+    coord_id = agent_ids.get("coordinator", "")
+    main_transcript = _load_transcript(coord_id, "", started_at)
+
+    all_entries: List[Dict[str, Any]] = list(main_transcript)
+
+    for role, aid in agent_ids.items():
+        if role == "coordinator":
+            continue
+        agent_dir = _get_agent_store_dir(aid)
+        sessions_dir = agent_dir / "sessions"
+        if not sessions_dir.exists():
+            continue
+        tolerance_seconds = 5.0
+        for jsonl_path in sessions_dir.glob("*.jsonl"):
+            try:
+                if jsonl_path.stat().st_mtime < (started_at - tolerance_seconds):
+                    continue
+            except OSError:
+                continue
+            entries = _parse_jsonl_file(jsonl_path)
+            all_entries.extend(entries)
+
+    return main_transcript, all_entries

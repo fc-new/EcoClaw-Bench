@@ -115,7 +115,7 @@ generate_cost_report_and_print_summary() {
     return 0
   fi
 
-  if ! python "${REPO_ROOT}/src/cost/calculate_llm_cost.py" \
+  if ! python3 "${REPO_ROOT}/src/cost/calculate_llm_cost.py" \
     --input "${result_json}" \
     --output "${report_json}" \
     --cache-write-ttl "${cache_write_ttl}" >/dev/null; then
@@ -123,7 +123,7 @@ generate_cost_report_and_print_summary() {
     return 0
   fi
 
-  python - <<'PY' "${report_json}"
+  python3 - <<'PY' "${report_json}"
 import json
 import sys
 from pathlib import Path
@@ -153,4 +153,183 @@ if by_model:
         )
 print("=" * 80)
 PY
+}
+
+# ---------------------------------------------------------------------------
+# Multi-agent config management
+# ---------------------------------------------------------------------------
+
+OPENCLAW_CONFIG_PATH="${HOME}/.openclaw/openclaw.json"
+OPENCLAW_CONFIG_BACKUP="${HOME}/.openclaw/openclaw.json.bak.bench"
+
+backup_openclaw_config() {
+  if [[ -f "${OPENCLAW_CONFIG_BACKUP}" ]]; then
+    echo "ERROR: Benchmark config backup already exists: ${OPENCLAW_CONFIG_BACKUP}" >&2
+    echo "A previous run may not have restored cleanly. Inspect and remove manually." >&2
+    return 1
+  fi
+  cp "${OPENCLAW_CONFIG_PATH}" "${OPENCLAW_CONFIG_BACKUP}"
+  echo "Backed up openclaw.json to ${OPENCLAW_CONFIG_BACKUP}"
+}
+
+restore_openclaw_config() {
+  if [[ ! -f "${OPENCLAW_CONFIG_BACKUP}" ]]; then
+    return 0
+  fi
+  cp "${OPENCLAW_CONFIG_BACKUP}" "${OPENCLAW_CONFIG_PATH}"
+  rm -f "${OPENCLAW_CONFIG_BACKUP}"
+  echo "Restored openclaw.json from backup"
+}
+
+recover_stale_openclaw_config_backup() {
+  if [[ ! -f "${OPENCLAW_CONFIG_BACKUP}" ]]; then
+    return 0
+  fi
+  echo "Found stale benchmark backup at ${OPENCLAW_CONFIG_BACKUP}; restoring it before starting a new run."
+  cp "${OPENCLAW_CONFIG_BACKUP}" "${OPENCLAW_CONFIG_PATH}"
+  rm -f "${OPENCLAW_CONFIG_BACKUP}"
+}
+
+ensure_openclaw_gateway_running() {
+  if openclaw status 2>/dev/null | grep -q 'Gateway.*unreachable'; then
+    echo "OpenClaw gateway is unreachable; starting a local gateway..."
+    nohup openclaw gateway --force >/tmp/openclaw_gateway.log 2>&1 &
+    local gateway_pid=$!
+    local attempts=0
+    while [[ ${attempts} -lt 20 ]]; do
+      if openclaw status 2>/dev/null | grep -q 'Gateway.*local .*18789' && \
+         ! openclaw status 2>/dev/null | grep -q 'Gateway.*unreachable'; then
+        echo "OpenClaw gateway is ready (pid=${gateway_pid})"
+        return 0
+      fi
+      attempts=$((attempts + 1))
+      sleep 1
+    done
+    echo "ERROR: OpenClaw gateway failed to become reachable. See /tmp/openclaw_gateway.log" >&2
+    return 1
+  fi
+  echo "OpenClaw gateway is reachable"
+}
+
+inject_multi_agent_config() {
+  local subagent_model="${1:?subagent model is required}"
+  local subagent_thinking="${2:-medium}"
+  local subagent_max_concurrent="${3:-4}"
+
+  python3 - "${OPENCLAW_CONFIG_PATH}" "${subagent_model}" "${subagent_thinking}" "${subagent_max_concurrent}" <<'INJECT_PY'
+import json, sys, copy
+config_path, sa_model, sa_thinking, sa_max_concurrent = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+with open(config_path, "r", encoding="utf-8") as f:
+    cfg = json.load(f)
+
+# Deep-merge agents.defaults.subagents
+agents = cfg.setdefault("agents", {})
+defaults = agents.setdefault("defaults", {})
+model_defaults = defaults.setdefault("model", {})
+model_defaults["primary"] = sa_model
+sa = defaults.setdefault("subagents", {})
+sa["model"] = sa_model
+sa["thinking"] = sa_thinking
+sa["maxConcurrent"] = sa_max_concurrent
+sa.setdefault("archiveAfterMinutes", 30)
+
+# Deep-merge tools.subagents.tools.deny
+tools = cfg.setdefault("tools", {})
+sa_tools = tools.setdefault("subagents", {})
+sa_tools_inner = sa_tools.setdefault("tools", {})
+deny = sa_tools_inner.get("deny", [])
+if "browser" not in deny:
+    deny.append("browser")
+sa_tools_inner["deny"] = deny
+
+with open(config_path, "w", encoding="utf-8") as f:
+    json.dump(cfg, f, indent=2, ensure_ascii=False)
+    f.write("\n")
+print(f"Injected multi-agent config: model={sa_model} thinking={sa_thinking} maxConcurrent={sa_max_concurrent}")
+INJECT_PY
+}
+
+inject_agent_config_from_file() {
+  local agent_config_json="${1:?agent config JSON file is required}"
+  local skills_dir="${2:-}"
+
+  if [[ ! -f "${agent_config_json}" ]]; then
+    echo "ERROR: Agent config file not found: ${agent_config_json}" >&2
+    return 1
+  fi
+
+python3 - "${OPENCLAW_CONFIG_PATH}" "${agent_config_json}" "${skills_dir}" <<'INJECT_PY'
+import json
+import sys
+
+config_path, agent_config_path, skills_dir = sys.argv[1], sys.argv[2], sys.argv[3]
+
+with open(config_path, "r", encoding="utf-8") as f:
+    cfg = json.load(f)
+with open(agent_config_path, "r", encoding="utf-8") as f:
+    ac = json.load(f)
+
+src_agents = ac.get("agents", {})
+src_agent_list = src_agents.get("list", [])
+default_agent = None
+for entry in src_agent_list:
+    if entry.get("default") or entry.get("id") == "coordinator":
+        default_agent = entry
+        break
+if default_agent is None and src_agent_list:
+    default_agent = src_agent_list[0]
+default_agent_model = default_agent.get("model") if isinstance(default_agent, dict) else None
+
+if "agents" in ac:
+    dst_agents = cfg.setdefault("agents", {})
+    if "defaults" in src_agents:
+        dst_defaults = dst_agents.setdefault("defaults", {})
+        for dk, dv in src_agents["defaults"].items():
+            if isinstance(dv, dict):
+                dst_defaults.setdefault(dk, {}).update(dv)
+            else:
+                dst_defaults[dk] = dv
+    if default_agent_model:
+        dst_defaults = dst_agents.setdefault("defaults", {})
+        dst_defaults.setdefault("model", {})["primary"] = default_agent_model
+    if "list" in src_agents:
+        dst_agents["list"] = src_agents["list"]
+
+if "tools" in ac:
+    dst_tools = cfg.setdefault("tools", {})
+    for tk, tv in ac["tools"].items():
+        if isinstance(tv, dict):
+            existing = dst_tools.setdefault(tk, {})
+            if isinstance(existing, dict):
+                for inner_k, inner_v in tv.items():
+                    if isinstance(inner_v, dict) and isinstance(existing.get(inner_k), dict):
+                        existing[inner_k].update(inner_v)
+                    else:
+                        existing[inner_k] = inner_v
+            else:
+                dst_tools[tk] = tv
+        else:
+            dst_tools[tk] = tv
+
+if "commands" in ac:
+    dst_commands = cfg.setdefault("commands", {})
+    dst_commands.update(ac["commands"])
+
+if skills_dir:
+    skills_cfg = cfg.setdefault("skills", {})
+    load_cfg = skills_cfg.setdefault("load", {})
+    extra_dirs = load_cfg.get("extraDirs", [])
+    if skills_dir not in extra_dirs:
+        extra_dirs.append(skills_dir)
+    load_cfg["extraDirs"] = extra_dirs
+
+with open(config_path, "w", encoding="utf-8") as f:
+    json.dump(cfg, f, indent=2, ensure_ascii=False)
+    f.write("\n")
+
+agent_ids = [a.get("id", "?") for a in ac.get("agents", {}).get("list", [])]
+print(f"Injected agent config from {agent_config_path}: agents={agent_ids}")
+if skills_dir:
+    print(f"Added skills extraDir: {skills_dir}")
+INJECT_PY
 }
