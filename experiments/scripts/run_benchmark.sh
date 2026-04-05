@@ -37,6 +37,7 @@ resolve_model_alias() {
     gpt-oss-20b) printf '%s/gpt-oss-20b\n' "${openai_provider_prefix}" ;;
     gpt-oss-120b) printf '%s/gpt-oss-120b\n' "${openai_provider_prefix}" ;;
     gpt-5-nano) printf '%s/gpt-5-nano\n' "${openai_provider_prefix}" ;;
+    gpt-5.4-mini) printf '%s/gpt-5.4-mini\n' "${openai_provider_prefix}" ;;
     gpt-5-mini) printf '%s/gpt-5-mini\n' "${openai_provider_prefix}" ;;
     gpt-5) printf '%s/gpt-5\n' "${openai_provider_prefix}" ;;
     gpt-5-chat) printf '%s/gpt-5-chat\n' "${openai_provider_prefix}" ;;

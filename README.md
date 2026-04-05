@@ -75,8 +75,8 @@ This repo uses a patched benchmark flow compared with upstream PinchBench script
 
 If your OpenClaw default model is not `dica/*`, prefer explicit full model ids in `.env`:
 
-- `ECOCLAW_MODEL=dica/gpt-5-mini`
-- `ECOCLAW_JUDGE=dica/gpt-5-nano`
+- `ECOCLAW_MODEL=dica/gpt-5.4-mini`
+- `ECOCLAW_JUDGE=dica/gpt-5.4-mini`
 
 This avoids silent fallback to other providers/models in mixed-provider OpenClaw configs.
 

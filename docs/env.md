@@ -21,8 +21,8 @@ ECOCLAW_BASE_URL=https://concept.dica.cc/llm
 Set model by alias or full model id:
 
 ```env
-ECOCLAW_MODEL=gpt-5-mini
-ECOCLAW_JUDGE=claude-opus-4.1
+ECOCLAW_MODEL=gpt-5.4-mini
+ECOCLAW_JUDGE=gpt-5.4-mini
 ```
 
 Supported aliases are defined in:

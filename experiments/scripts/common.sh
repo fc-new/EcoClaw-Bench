@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Unset proxy env vars to prevent LLM API requests from going through a
-# potentially broken local proxy tunnel.
-unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy 2>/dev/null || true
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
+normalize_openclaw_runtime_env() {
+  local openclaw_home="${ECOCLAW_OPENCLAW_HOME:-/mnt/20t/xubuqiang}"
+  export HOME="${openclaw_home}"
+  export XDG_CACHE_HOME="${HOME}/.cache"
+  export XDG_CONFIG_HOME="${HOME}/.config"
+  mkdir -p "${XDG_CACHE_HOME}" "${XDG_CACHE_HOME}/fontconfig" "${XDG_CONFIG_HOME}"
+}
+
+normalize_openclaw_runtime_env
 
 import_dotenv() {
   local env_path="${1:-${REPO_ROOT}/.env}"
@@ -25,6 +31,9 @@ import_dotenv() {
     key="${key%"${key##*[![:space:]]}"}"
     value="${value#"${value%%[![:space:]]*}"}"
     value="${value%"${value##*[![:space:]]}"}"
+    if [[ -n "${!key+x}" ]]; then
+      continue
+    fi
     export "${key}=${value}"
   done < "${env_path}"
 }
@@ -32,6 +41,10 @@ import_dotenv() {
 resolve_model_alias() {
   local model_like="${1:?model alias is required}"
   local openai_provider_prefix="${ECOCLAW_OPENAI_PROVIDER:-dica}"
+  # kuaipao model id uses dotted minor version (gpt-5.4-mini), not dashed (gpt-5-4-mini)
+  if [[ "${model_like}" == *"gpt-5-4-mini"* ]]; then
+    model_like="${model_like//gpt-5-4-mini/gpt-5.4-mini}"
+  fi
   if [[ "${model_like}" == */* ]]; then
     printf '%s\n' "${model_like}"
     return 0
@@ -40,8 +53,9 @@ resolve_model_alias() {
   case "${model_like}" in
     gpt-oss-20b) printf '%s/gpt-oss-20b\n' "${openai_provider_prefix}" ;;
     gpt-oss-120b) printf '%s/gpt-oss-120b\n' "${openai_provider_prefix}" ;;
-    gpt-5.4-mini) printf '%s/gpt-5.4-mini\n' "${openai_provider_prefix}" ;;
     gpt-5-nano) printf '%s/gpt-5-nano\n' "${openai_provider_prefix}" ;;
+    gpt-5.4-mini) printf '%s/gpt-5.4-mini\n' "${openai_provider_prefix}" ;;
+    gpt-5-4-mini) printf '%s/gpt-5.4-mini\n' "${openai_provider_prefix}" ;;
     gpt-5-mini) printf '%s/gpt-5-mini\n' "${openai_provider_prefix}" ;;
     gpt-5) printf '%s/gpt-5\n' "${openai_provider_prefix}" ;;
     gpt-5-chat) printf '%s/gpt-5-chat\n' "${openai_provider_prefix}" ;;
@@ -81,14 +95,189 @@ apply_ecoclaw_env() {
     export OPENAI_BASE_URL="${ECOCLAW_BASE_URL}"
     export OPENROUTER_BASE_URL="${ECOCLAW_BASE_URL}"
   fi
-  # MiniMax provider support
   if [[ -n "${MINIMAX_API_KEY:-}" ]]; then
     export MINIMAX_API_KEY="${MINIMAX_API_KEY}"
   fi
-  # GMN provider support
   if [[ -n "${GMN_API_KEY:-}" ]]; then
     export GMN_API_KEY="${GMN_API_KEY}"
   fi
+  if [[ -z "${ECOCLAW_UPSTREAM_HTTP_PROXY:-}" && -z "${ECOCLAW_UPSTREAM_HTTPS_PROXY:-}" ]]; then
+    unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
+    unset ECOCLAW_UPSTREAM_NO_PROXY NO_PROXY no_proxy
+  fi
+  if [[ -n "${ECOCLAW_UPSTREAM_HTTP_PROXY:-}" ]]; then
+    export ECOCLAW_UPSTREAM_HTTPS_PROXY="${ECOCLAW_UPSTREAM_HTTPS_PROXY:-${ECOCLAW_UPSTREAM_HTTP_PROXY}}"
+  fi
+  if [[ -n "${ECOCLAW_UPSTREAM_HTTPS_PROXY:-}" ]]; then
+    export ECOCLAW_UPSTREAM_HTTP_PROXY="${ECOCLAW_UPSTREAM_HTTP_PROXY:-${ECOCLAW_UPSTREAM_HTTPS_PROXY}}"
+  fi
+  if [[ -z "${ECOCLAW_UPSTREAM_NO_PROXY:-}" ]]; then
+    export ECOCLAW_UPSTREAM_NO_PROXY="127.0.0.1,localhost"
+  fi
+  if [[ -n "${ECOCLAW_UPSTREAM_HTTP_PROXY:-}" ]]; then
+    export HTTP_PROXY="${HTTP_PROXY:-${ECOCLAW_UPSTREAM_HTTP_PROXY}}"
+    export http_proxy="${http_proxy:-${ECOCLAW_UPSTREAM_HTTP_PROXY}}"
+  fi
+  if [[ -n "${ECOCLAW_UPSTREAM_HTTPS_PROXY:-}" ]]; then
+    export HTTPS_PROXY="${HTTPS_PROXY:-${ECOCLAW_UPSTREAM_HTTPS_PROXY}}"
+    export https_proxy="${https_proxy:-${ECOCLAW_UPSTREAM_HTTPS_PROXY}}"
+  fi
+  export NO_PROXY="${NO_PROXY:-${ECOCLAW_UPSTREAM_NO_PROXY}}"
+  export no_proxy="${no_proxy:-${ECOCLAW_UPSTREAM_NO_PROXY}}"
+}
+
+ensure_ecoclaw_plugin_config() {
+  local config_path="${OPENCLAW_CONFIG_PATH:-${HOME}/.openclaw/openclaw.json}"
+  local proxy_base_url="${ECOCLAW_BASE_URL:-https://www.dmxapi.cn/v1}"
+  local proxy_api_key="${ECOCLAW_API_KEY:-}"
+  local proxy_port="${ECOCLAW_PROXY_PORT:-17668}"
+  local proxy_pure_forward="${ECOCLAW_PROXY_PURE_FORWARD:-false}"
+  local reduction_trigger_min_chars="${ECOCLAW_REDUCTION_TRIGGER_MIN_CHARS:-2200}"
+  local reduction_max_tool_chars="${ECOCLAW_REDUCTION_MAX_TOOL_CHARS:-1200}"
+  local reduction_pass_repeated_read_dedup="${ECOCLAW_REDUCTION_PASS_REPEATED_READ_DEDUP:-true}"
+  local reduction_pass_tool_payload_trim="${ECOCLAW_REDUCTION_PASS_TOOL_PAYLOAD_TRIM:-false}"
+  local reduction_pass_html_slimming="${ECOCLAW_REDUCTION_PASS_HTML_SLIMMING:-true}"
+  local reduction_pass_exec_output_truncation="${ECOCLAW_REDUCTION_PASS_EXEC_OUTPUT_TRUNCATION:-true}"
+  local reduction_pass_agents_startup_optimization="${ECOCLAW_REDUCTION_PASS_AGENTS_STARTUP_OPTIMIZATION:-true}"
+  local reduction_pass_memory_fault_recovery="${ECOCLAW_REDUCTION_PASS_MEMORY_FAULT_RECOVERY:-true}"
+  local default_model="${ECOCLAW_MODEL:-ecoclaw/gpt-5.4-mini}"
+
+  if [[ ! -f "${config_path}" ]]; then
+    echo "WARN: openclaw config not found, skip ecoclaw config patch: ${config_path}" >&2
+    return 0
+  fi
+
+  python3 - "${config_path}" "${proxy_base_url}" "${proxy_api_key}" "${proxy_port}" "${proxy_pure_forward}" "${reduction_trigger_min_chars}" "${reduction_max_tool_chars}" "${reduction_pass_repeated_read_dedup}" "${reduction_pass_tool_payload_trim}" "${reduction_pass_html_slimming}" "${reduction_pass_exec_output_truncation}" "${reduction_pass_agents_startup_optimization}" "${reduction_pass_memory_fault_recovery}" "${default_model}" <<'PATCH_PY'
+import json
+import os
+import sys
+
+(
+    config_path,
+    proxy_base_url,
+    proxy_api_key,
+    proxy_port_raw,
+    proxy_pure_forward_raw,
+    trigger_min_chars_raw,
+    max_tool_chars_raw,
+    pass_repeated_read_dedup_raw,
+    pass_tool_payload_trim_raw,
+    pass_html_slimming_raw,
+    pass_exec_output_truncation_raw,
+    pass_agents_startup_optimization_raw,
+    pass_memory_fault_recovery_raw,
+    default_model,
+) = sys.argv[1:15]
+
+proxy_port = int(proxy_port_raw)
+proxy_pure_forward = str(proxy_pure_forward_raw).strip().lower() in ("1", "true", "yes", "on")
+trigger_min_chars = int(trigger_min_chars_raw)
+max_tool_chars = int(max_tool_chars_raw)
+parse_bool = lambda x: str(x).strip().lower() in ("1", "true", "yes", "on")
+pass_repeated_read_dedup = parse_bool(pass_repeated_read_dedup_raw)
+pass_tool_payload_trim = parse_bool(pass_tool_payload_trim_raw)
+pass_html_slimming = parse_bool(pass_html_slimming_raw)
+pass_exec_output_truncation = parse_bool(pass_exec_output_truncation_raw)
+pass_agents_startup_optimization = parse_bool(pass_agents_startup_optimization_raw)
+pass_memory_fault_recovery = parse_bool(pass_memory_fault_recovery_raw)
+
+with open(config_path, "r", encoding="utf-8") as f:
+    cfg = json.load(f)
+
+plugins = cfg.setdefault("plugins", {})
+entries = plugins.setdefault("entries", {})
+ecoclaw = entries.setdefault("ecoclaw", {})
+ecoclaw["enabled"] = True
+slots = plugins.setdefault("slots", {})
+slots["contextEngine"] = "ecoclaw-context"
+ecoclaw_cfg = ecoclaw.setdefault("config", {})
+ecoclaw_cfg["enabled"] = True
+ecoclaw_cfg["proxyAutostart"] = True
+ecoclaw_cfg["proxyPort"] = proxy_port
+ecoclaw_cfg["proxyBaseUrl"] = proxy_base_url
+if proxy_api_key:
+    ecoclaw_cfg["proxyApiKey"] = proxy_api_key
+proxy_mode = ecoclaw_cfg.setdefault("proxyMode", {})
+proxy_mode["pureForward"] = proxy_pure_forward
+
+modules = ecoclaw_cfg.setdefault("modules", {})
+modules["stabilizer"] = True
+modules["policy"] = True
+modules["reduction"] = True
+modules["compaction"] = False
+modules["eviction"] = False
+modules["decisionLedger"] = True
+
+hooks = ecoclaw_cfg.setdefault("hooks", {})
+hooks["beforeToolCall"] = True
+hooks["toolResultPersist"] = True
+
+context_engine = ecoclaw_cfg.setdefault("contextEngine", {})
+context_engine["enabled"] = True
+context_engine.setdefault("pruneThresholdChars", 100000)
+context_engine.setdefault("keepRecentToolResults", 5)
+context_engine.setdefault("placeholder", "[pruned]")
+
+reduction = ecoclaw_cfg.setdefault("reduction", {})
+reduction["engine"] = "layered"
+reduction["triggerMinChars"] = max(256, trigger_min_chars)
+reduction["maxToolChars"] = max(256, max_tool_chars)
+passes = reduction.setdefault("passes", {})
+passes["repeatedReadDedup"] = pass_repeated_read_dedup
+passes["toolPayloadTrim"] = pass_tool_payload_trim
+passes["htmlSlimming"] = pass_html_slimming
+passes["execOutputTruncation"] = pass_exec_output_truncation
+passes["agentsStartupOptimization"] = pass_agents_startup_optimization
+passes["memoryFaultRecovery"] = pass_memory_fault_recovery
+pass_options = reduction.setdefault("passOptions", {})
+
+def maybe_apply_json_env(env_name: str, key: str) -> None:
+    raw = os.environ.get(env_name, "").strip()
+    if not raw:
+        return
+    try:
+        parsed = json.loads(raw)
+    except Exception as exc:
+        raise SystemExit(f"Invalid JSON in {env_name}: {exc}")
+    if not isinstance(parsed, dict):
+        raise SystemExit(f"{env_name} must decode to a JSON object")
+    pass_options[key] = parsed
+
+maybe_apply_json_env("ECOCLAW_REDUCTION_PASS_OPTIONS_REPEATED_READ_DEDUP_JSON", "repeatedReadDedup")
+maybe_apply_json_env("ECOCLAW_REDUCTION_PASS_OPTIONS_TOOL_PAYLOAD_TRIM_JSON", "toolPayloadTrim")
+maybe_apply_json_env("ECOCLAW_REDUCTION_PASS_OPTIONS_HTML_SLIMMING_JSON", "htmlSlimming")
+maybe_apply_json_env("ECOCLAW_REDUCTION_PASS_OPTIONS_EXEC_OUTPUT_TRUNCATION_JSON", "execOutputTruncation")
+maybe_apply_json_env("ECOCLAW_REDUCTION_PASS_OPTIONS_AGENTS_STARTUP_OPTIMIZATION_JSON", "agentsStartupOptimization")
+maybe_apply_json_env("ECOCLAW_REDUCTION_PASS_OPTIONS_MEMORY_FAULT_RECOVERY_JSON", "memoryFaultRecovery")
+maybe_apply_json_env("ECOCLAW_REDUCTION_PASS_OPTIONS_FORMAT_SLIMMING_JSON", "formatSlimming")
+maybe_apply_json_env("ECOCLAW_REDUCTION_PASS_OPTIONS_SEMANTIC_LLMLINGUA2_JSON", "semanticLlmlingua2")
+maybe_apply_json_env("ECOCLAW_REDUCTION_PASS_OPTIONS_FORMAT_CLEANING_JSON", "formatCleaning")
+maybe_apply_json_env("ECOCLAW_REDUCTION_PASS_OPTIONS_PATH_TRUNCATION_JSON", "pathTruncation")
+maybe_apply_json_env("ECOCLAW_REDUCTION_PASS_OPTIONS_IMAGE_DOWNSAMPLE_JSON", "imageDownsample")
+maybe_apply_json_env("ECOCLAW_REDUCTION_PASS_OPTIONS_LINE_NUMBER_STRIP_JSON", "lineNumberStrip")
+
+agents = cfg.setdefault("agents", {})
+defaults = agents.setdefault("defaults", {})
+model_defaults = defaults.setdefault("model", {})
+model_defaults["primary"] = default_model
+model_defaults["fallbacks"] = []
+
+with open(config_path, "w", encoding="utf-8") as f:
+    json.dump(cfg, f, indent=2, ensure_ascii=False)
+    f.write("\n")
+
+print(
+    "Ensured ecoclaw plugin config:",
+    f"port={ecoclaw_cfg.get('proxyPort')}",
+    f"base={ecoclaw_cfg.get('proxyBaseUrl')}",
+    f"pureForward={proxy_mode.get('pureForward')}",
+    f"engine={reduction.get('engine')}",
+    f"trim={passes.get('toolPayloadTrim')}",
+    f"contextEngineSlot={slots.get('contextEngine')}",
+    f"primary={model_defaults.get('primary')}",
+    f"fallbacks={len(model_defaults.get('fallbacks', []))}",
+)
+PATCH_PY
 }
 
 resolve_skill_dir() {
@@ -171,12 +360,120 @@ print("=" * 80)
 PY
 }
 
+generate_reduction_pass_report_and_print_summary() {
+  local trace_jsonl="${1:?trace jsonl is required}"
+  local report_json="${2:?report json is required}"
+  local run_start_iso="${3:?run start iso is required}"
+
+  if [[ ! -f "${trace_jsonl}" ]]; then
+    echo "Reduction pass report skipped: trace file not found: ${trace_jsonl}" >&2
+    return 0
+  fi
+
+  python3 - <<'PY' "${trace_jsonl}" "${report_json}" "${run_start_iso}"
+import json
+import sys
+from collections import defaultdict
+from datetime import datetime, timezone
+from pathlib import Path
+
+trace_path = Path(sys.argv[1])
+report_path = Path(sys.argv[2])
+run_start_iso = sys.argv[3]
+run_start = datetime.fromisoformat(run_start_iso.replace("Z", "+00:00"))
+
+rows = []
+for line in trace_path.read_text(encoding="utf-8", errors="replace").splitlines():
+    line = line.strip()
+    if not line:
+      continue
+    try:
+      row = json.loads(line)
+    except Exception:
+      continue
+    try:
+      at = datetime.fromisoformat(str(row.get("at", "")).replace("Z", "+00:00"))
+    except Exception:
+      continue
+    if at < run_start:
+      continue
+    rows.append(row)
+
+by_pass = defaultdict(lambda: {
+    "rows": 0,
+    "changed": 0,
+    "saved_chars": 0,
+    "stages": defaultdict(int),
+    "phases": defaultdict(int),
+    "targets": defaultdict(int),
+    "skipped": defaultdict(int),
+})
+
+for row in rows:
+    pass_id = str(row.get("passId", "unknown"))
+    info = by_pass[pass_id]
+    info["rows"] += 1
+    if row.get("changed"):
+        info["changed"] += 1
+    info["saved_chars"] += int(row.get("savedChars", 0) or 0)
+    info["stages"][str(row.get("stage", ""))] += 1
+    info["phases"][str(row.get("phase", ""))] += 1
+    info["targets"][str(row.get("target", ""))] += 1
+    skipped = str(row.get("skippedReason", "") or "")
+    if skipped:
+        info["skipped"][skipped] += 1
+
+report = {
+    "trace_path": str(trace_path),
+    "run_start_iso": run_start_iso,
+    "rows": len(rows),
+    "passes": [],
+}
+
+for pass_id in sorted(by_pass):
+    info = by_pass[pass_id]
+    report["passes"].append({
+        "pass_id": pass_id,
+        "rows": info["rows"],
+        "changed": info["changed"],
+        "saved_chars": info["saved_chars"],
+        "stages": dict(sorted(info["stages"].items())),
+        "phases": dict(sorted(info["phases"].items())),
+        "targets": dict(sorted(info["targets"].items())),
+        "skipped": dict(sorted(info["skipped"].items())),
+    })
+
+report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+print("=" * 80)
+print("REDUCTION PASS SUMMARY")
+print("=" * 80)
+print(f"Trace: {trace_path}")
+print(f"Report: {report_path}")
+print(f"Rows in run window: {len(rows)}")
+if report["passes"]:
+    print("-" * 80)
+    print(f"{'PASS':32} {'ROWS':>6} {'CHANGED':>8} {'SAVED_CHARS':>12}")
+    print("-" * 80)
+    for row in report["passes"]:
+        print(
+            f"{row['pass_id'][:32]:32} "
+            f"{int(row['rows']):6d} "
+            f"{int(row['changed']):8d} "
+            f"{int(row['saved_chars']):12d}"
+        )
+else:
+    print("No reduction pass rows found for this run window.")
+print("=" * 80)
+PY
+}
+
 # ---------------------------------------------------------------------------
 # Multi-agent config management
 # ---------------------------------------------------------------------------
 
-OPENCLAW_CONFIG_PATH="${HOME}/.openclaw/openclaw.json"
-OPENCLAW_CONFIG_BACKUP="${HOME}/.openclaw/openclaw.json.bak.bench"
+OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-${HOME}/.openclaw/openclaw.json}"
+OPENCLAW_CONFIG_BACKUP="${OPENCLAW_CONFIG_BACKUP:-${OPENCLAW_CONFIG_PATH}.bak.bench}"
 
 backup_openclaw_config() {
   if [[ -f "${OPENCLAW_CONFIG_BACKUP}" ]]; then
@@ -207,79 +504,67 @@ recover_stale_openclaw_config_backup() {
 }
 
 ensure_openclaw_gateway_running() {
-  local status_output
-  status_output="$(openclaw status 2>/dev/null || true)"
-
-  # Check if gateway is running (even if scope error exists)
-  if echo "${status_output}" | grep -q 'Gateway.*local.*18789'; then
-    # Gateway process is listening — may have scope warnings but it's operational
-    echo "OpenClaw gateway is running on port 18789"
-    return 0
+  normalize_openclaw_runtime_env
+  local force_restart="${ECOCLAW_FORCE_GATEWAY_RESTART:-false}"
+  local gateway_port="${ECOCLAW_GATEWAY_PORT:-}"
+  if [[ -z "${gateway_port}" ]]; then
+    gateway_port="$(python3 - <<'PY'
+import json
+from pathlib import Path
+p = Path("/mnt/20t/xubuqiang/.openclaw/openclaw.json")
+try:
+    obj = json.loads(p.read_text(encoding="utf-8"))
+    print(obj.get("gateway", {}).get("port", 28789))
+except Exception:
+    print(28789)
+PY
+)"
   fi
-
-  # Check if systemd service is running
-  if echo "${status_output}" | grep -q 'Gateway service.*running'; then
-    echo "OpenClaw gateway service is running (systemd)"
-    return 0
+  if [[ "${force_restart}" =~ ^(true|1|yes)$ ]]; then
+    echo "Forcing OpenClaw gateway restart on port ${gateway_port}..."
+    rm -f /tmp/openclaw_gateway.log
+    nohup env \
+      HOME="${HOME}" \
+      XDG_CACHE_HOME="${XDG_CACHE_HOME}" \
+      XDG_CONFIG_HOME="${XDG_CONFIG_HOME}" \
+      ECOCLAW_UPSTREAM_HTTP_PROXY="${ECOCLAW_UPSTREAM_HTTP_PROXY:-}" \
+      ECOCLAW_UPSTREAM_HTTPS_PROXY="${ECOCLAW_UPSTREAM_HTTPS_PROXY:-}" \
+      ECOCLAW_UPSTREAM_NO_PROXY="${ECOCLAW_UPSTREAM_NO_PROXY:-}" \
+      openclaw gateway run --force --port "${gateway_port}" >/tmp/openclaw_gateway.log 2>&1 &
+    local gateway_pid=$!
+    local attempts=0
+    while [[ ${attempts} -lt 30 ]]; do
+      if openclaw gateway health >/dev/null 2>&1; then
+        echo "OpenClaw gateway restarted (pid=${gateway_pid})"
+        return 0
+      fi
+      attempts=$((attempts + 1))
+      sleep 1
+    done
+    echo "ERROR: forced OpenClaw gateway restart failed. See /tmp/openclaw_gateway.log" >&2
+    return 1
   fi
-
-  # Gateway is truly not running — start it
-  echo "OpenClaw gateway is not running; starting a local gateway..."
-  nohup openclaw gateway --force >/tmp/openclaw_gateway.log 2>&1 &
-  local gateway_pid=$!
-  local attempts=0
-  while [[ ${attempts} -lt 20 ]]; do
-    if openclaw status 2>/dev/null | grep -q 'Gateway.*local.*18789'; then
-      echo "OpenClaw gateway is ready (pid=${gateway_pid})"
+  if ! openclaw gateway health >/dev/null 2>&1; then
+    echo "OpenClaw gateway is unreachable; starting a local gateway..."
+    nohup openclaw gateway --force >/tmp/openclaw_gateway.log 2>&1 &
+    local gateway_pid=$!
+    local attempts=0
+    while [[ ${attempts} -lt 20 ]]; do
+      if openclaw gateway health >/dev/null 2>&1; then
+        echo "OpenClaw gateway is ready (pid=${gateway_pid})"
+        return 0
+      fi
+      attempts=$((attempts + 1))
+      sleep 1
+    done
+    if openclaw gateway health >/dev/null 2>&1; then
+      echo "OpenClaw gateway became reachable after startup race."
       return 0
     fi
-    attempts=$((attempts + 1))
-    sleep 1
-  done
-  echo "ERROR: OpenClaw gateway failed to start. See /tmp/openclaw_gateway.log" >&2
-  return 1
-}
-
-cleanup_bench_agents_and_gateway() {
-  echo "Cleaning up bench agents and gateway..."
-
-  # Remove all bench-* agent entries from openclaw config
-  local bench_agents
-  bench_agents="$(openclaw agents list 2>&1 | grep -oP '(?<=^- )\S+' | grep '^bench-' || true)"
-  if [[ -n "${bench_agents}" ]]; then
-    local count=0
-    while IFS= read -r agent; do
-      openclaw agents delete "${agent}" --force >/dev/null 2>&1 || true
-      count=$((count + 1))
-    done <<< "${bench_agents}"
-    echo "Deleted ${count} bench agent(s) from openclaw"
+    echo "ERROR: OpenClaw gateway failed to become reachable. See /tmp/openclaw_gateway.log" >&2
+    return 1
   fi
-
-  # Remove bench-* agent store directories
-  if compgen -G "${HOME}/.openclaw/agents/bench-*" >/dev/null 2>&1; then
-    rm -rf "${HOME}/.openclaw/agents/bench-"*
-    echo "Removed bench agent store directories"
-  fi
-
-  # Remove workspace-bench-* directories
-  if compgen -G "${HOME}/.openclaw/workspace-bench-*" >/dev/null 2>&1; then
-    rm -rf "${HOME}/.openclaw/workspace-bench-"*
-    echo "Removed bench workspace directories"
-  fi
-
-  # Remove openclaw.json backup/tmp files
-  rm -f "${HOME}/.openclaw/openclaw.json.bak."[0-9]* \
-        "${HOME}/.openclaw/openclaw.json."*.tmp 2>/dev/null || true
-
-  # Remove /tmp/pinchbench workspace residuals
-  rm -rf /tmp/pinchbench* 2>/dev/null || true
-
-  # Restart gateway to clear in-memory session state
-  if pkill -f 'openclaw gateway' 2>/dev/null; then
-    echo "Stopped openclaw gateway"
-  fi
-
-  echo "Bench cleanup complete"
+  echo "OpenClaw gateway is reachable"
 }
 
 inject_multi_agent_config() {
@@ -318,144 +603,6 @@ with open(config_path, "w", encoding="utf-8") as f:
     f.write("\n")
 print(f"Injected multi-agent config: model={sa_model} thinking={sa_thinking} maxConcurrent={sa_max_concurrent}")
 INJECT_PY
-}
-
-# ---------------------------------------------------------------------------
-# OpenSpace MCP management
-# ---------------------------------------------------------------------------
-
-OPENSPACE_SERVER_PID_FILE="/tmp/openspace_mcp_bench.pid"
-
-start_openspace_server() {
-  # mode: "cold" (default, Phase 1 — build skill library via execute_task)
-  #       "hot"  (Phase 2 — reuse skills from cold run via search_skills)
-  local mode="${1:-${OPENSPACE_MODE:-cold}}"
-  local port="${OPENSPACE_PORT:-${ECOCLAW_OPENSPACE_PORT:-8081}}"
-  local workspace="${OPENSPACE_WORKSPACE:-${ECOCLAW_OPENSPACE_WORKSPACE:-}}"
-  local skill_dirs="${OPENSPACE_HOST_SKILL_DIRS:-${ECOCLAW_OPENSPACE_SKILL_DIRS:-}}"
-  # Expand leading ~ that import_dotenv does not expand (it uses read -r, not eval)
-  workspace="${workspace/#\~/$HOME}"
-  skill_dirs="${skill_dirs/#\~/$HOME}"
-
-  if [[ -f "${OPENSPACE_SERVER_PID_FILE}" ]]; then
-    local existing_pid
-    existing_pid="$(cat "${OPENSPACE_SERVER_PID_FILE}")"
-    if kill -0 "${existing_pid}" 2>/dev/null; then
-      echo "OpenSpace MCP server already running (pid=${existing_pid}, mode=${mode})"
-      return 0
-    fi
-    rm -f "${OPENSPACE_SERVER_PID_FILE}"
-  fi
-
-  # ECOCLAW_OPENSPACE_MCP_CMD allows pointing to openspace-mcp in a different Python env
-  # e.g. ECOCLAW_OPENSPACE_MCP_CMD=/home/user/anaconda3/bin/openspace-mcp
-  local mcp_cmd="${OPENSPACE_MCP_CMD:-${ECOCLAW_OPENSPACE_MCP_CMD:-openspace-mcp}}"
-
-  echo "Starting OpenSpace MCP server on port ${port} (cmd: ${mcp_cmd}, mode: ${mode})..."
-  local env_prefix=()
-  [[ -n "${workspace}" ]]   && env_prefix+=(OPENSPACE_WORKSPACE="${workspace}")
-  [[ -n "${skill_dirs}" ]]  && env_prefix+=(OPENSPACE_HOST_SKILL_DIRS="${skill_dirs}")
-  [[ -n "${OPENSPACE_API_KEY:-}" ]]     && env_prefix+=(OPENSPACE_API_KEY="${OPENSPACE_API_KEY}")
-  # LLM for OpenSpace's internal grounding agent (execute_task).
-  # Set OPENSPACE_MODEL / OPENSPACE_LLM_API_KEY / OPENSPACE_LLM_API_BASE in .env.
-  [[ -n "${OPENSPACE_MODEL:-}" ]]       && env_prefix+=(OPENSPACE_MODEL="${OPENSPACE_MODEL}")
-  [[ -n "${OPENSPACE_LLM_API_KEY:-}" ]] && env_prefix+=(OPENSPACE_LLM_API_KEY="${OPENSPACE_LLM_API_KEY}")
-  [[ -n "${OPENSPACE_LLM_API_BASE:-}" ]] && env_prefix+=(OPENSPACE_LLM_API_BASE="${OPENSPACE_LLM_API_BASE}")
-  # Pass mode to the plugin via env so the before_prompt_build hook switches behavior
-  env_prefix+=(OPENSPACE_MODE="${mode}")
-
-  env "${env_prefix[@]}" nohup "${mcp_cmd}" \
-    --transport streamable-http --host 127.0.0.1 --port "${port}" \
-    >/tmp/openspace_mcp_bench.log 2>&1 &
-  echo $! > "${OPENSPACE_SERVER_PID_FILE}"
-
-  local attempts=0
-  while [[ ${attempts} -lt 20 ]]; do
-    if nc -z 127.0.0.1 "${port}" 2>/dev/null; then
-      echo "OpenSpace MCP server ready (pid=$(cat "${OPENSPACE_SERVER_PID_FILE}"), port=${port})"
-      return 0
-    fi
-    attempts=$((attempts + 1))
-    sleep 1
-  done
-  echo "ERROR: OpenSpace MCP server failed to start. See /tmp/openspace_mcp_bench.log" >&2
-  return 1
-}
-
-stop_openspace_server() {
-  if [[ ! -f "${OPENSPACE_SERVER_PID_FILE}" ]]; then
-    return 0
-  fi
-  local pid
-  pid="$(cat "${OPENSPACE_SERVER_PID_FILE}")"
-  if kill -0 "${pid}" 2>/dev/null; then
-    kill "${pid}" 2>/dev/null || true
-    sleep 1
-    echo "OpenSpace MCP server stopped (pid=${pid})"
-  fi
-  rm -f "${OPENSPACE_SERVER_PID_FILE}"
-}
-
-register_openspace_plugin() {
-  local port="${OPENSPACE_PORT:-${ECOCLAW_OPENSPACE_PORT:-8081}}"
-  local plugin_dir
-  plugin_dir="$(cd "${REPO_ROOT}/experiments/methods/retrieval/openspace/openclaw-plugin" && pwd)"
-
-  echo "Enabling openspace-tools plugin (port ${port})..."
-
-  # Inject plugin path into plugins.load.paths and enable the plugin entry.
-  # NOTE: This version of OpenClaw (2026.3.13) does not have `openclaw mcp set`,
-  # so we register via the plugin system instead. The plugin proxies the 4 MCP
-  # tools with parameter schemas that match the actual openspace-mcp tool
-  # signatures (execute_task/search_skills/fix_skill/upload_skill).
-  python3 - "${OPENCLAW_CONFIG_PATH}" "${plugin_dir}" "${port}" <<'INJECT_PY'
-import json, sys
-config_path, plugin_dir, port = sys.argv[1], sys.argv[2], sys.argv[3]
-with open(config_path, "r", encoding="utf-8") as f:
-    cfg = json.load(f)
-
-# Add plugin dir to plugins.load.paths (deduplicated)
-plugins = cfg.setdefault("plugins", {})
-load = plugins.setdefault("load", {})
-paths = load.get("paths", [])
-if plugin_dir not in paths:
-    paths.append(plugin_dir)
-load["paths"] = paths
-
-# Enable the plugin entry with baseUrl pointing to the running server
-entries = plugins.setdefault("entries", {})
-entries["openspace-tools"] = {
-    "enabled": True,
-    "hooks": {
-        "allowPromptInjection": True
-    },
-    "config": {
-        "baseUrl": f"http://127.0.0.1:{port}",
-        "timeout": 600
-    }
-}
-
-# tools.profile="coding" creates an allowlist of only core coding tools; plugin
-# tools registered via api.registerTool() are not in that list and are silently
-# filtered out before the LLM sees them.
-# tools.alsoAllow appends to the profile allowlist (valid because tools.allow is
-# not set — setting both allow+alsoAllow is an error). "group:plugins" expands
-# to all currently-loaded plugin tool names at runtime.
-tools_cfg = cfg.setdefault("tools", {})
-tools_cfg["alsoAllow"] = ["group:plugins"]
-
-with open(config_path, "w", encoding="utf-8") as f:
-    json.dump(cfg, f, indent=2, ensure_ascii=False)
-    f.write("\n")
-print(f"Registered openspace-tools plugin (dir={plugin_dir}, port={port}), added group:plugins to tools.alsoAllow")
-INJECT_PY
-}
-
-unregister_openspace_plugin() {
-  echo "Disabling openspace-tools plugin..."
-  openclaw config set plugins.entries.openspace-tools.enabled false 2>/dev/null || true
-  # Remove the group:plugins alsoAllow added for OpenSpace so other runs are not affected
-  openclaw config unset tools.alsoAllow 2>/dev/null || true
 }
 
 inject_agent_config_from_file() {
