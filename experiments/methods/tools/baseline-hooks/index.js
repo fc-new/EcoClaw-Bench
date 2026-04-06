@@ -169,7 +169,7 @@ async function qmdSearch(query, topN = QMD_TOP_N, minScore = QMD_MIN_SCORE) {
 const CCR_TOP_N = Number(process.env.ECOCLAW_CCR_TOPN || "3");
 const CCR_SCRIPT = process.env.ECOCLAW_CCR_SCRIPT || join(
     process.env.HOME || "/tmp",
-    "cdm_program/EcoClaw-Bench/experiments/methods/retrieval/ccr/ccr_search.py",
+    "cdm_program/EcoClaw-Bench/experiments/methods/retrieval/ccr/ccr_search.py",  // retrieval/ccr — unchanged
 );
 const CCR_PYTHON = process.env.ECOCLAW_CCR_PYTHON || "python";
 
@@ -202,7 +202,7 @@ async function ccrSearch(query, topN = CCR_TOP_N) {
 
 const LLMLINGUA_SCRIPT = process.env.ECOCLAW_LLMLINGUA_SCRIPT || join(
     process.env.HOME || "/tmp",
-    "cdm_program/EcoClaw-Bench/experiments/methods/prompt-compression/llmlingua/llmlingua_compress.py",
+    "cdm_program/EcoClaw-Bench/experiments/methods/static_compression/llmlingua/llmlingua_compress.py",
 );
 const LLMLINGUA_RATE = process.env.ECOCLAW_LLMLINGUA_RATE || "0.5";
 const LLMLINGUA_MIN_LENGTH = Number(process.env.ECOCLAW_LLMLINGUA_MIN_LENGTH || "200");
@@ -234,7 +234,7 @@ async function llmlinguaCompress(text) {
 
 const SELCTX_SCRIPT = process.env.ECOCLAW_SELCTX_SCRIPT || join(
     process.env.HOME || "/tmp",
-    "cdm_program/EcoClaw-Bench/experiments/methods/prompt-compression/selective-context/selective_context.py",
+    "cdm_program/EcoClaw-Bench/experiments/methods/static_compression/selective-context/selective_context.py",
 );
 const SELCTX_RATIO = process.env.ECOCLAW_SELCTX_RATIO || "0.4";
 const SELCTX_UNIT = process.env.ECOCLAW_SELCTX_UNIT || "sentence"; // "sentence" | "phrase" | "token"
