@@ -2,12 +2,12 @@
   "agents": {
     "defaults": {
       "model": {
-        "primary": "dmxapi/gpt-5.4-mini",
+        "primary": "dmxapi/gpt-5-mini",
         "fallbacks": []
       },
       "subagents": {
-        "model": "dmxapi/gpt-5.4-mini",
-        "thinking": "medium",
+        "model": "dmxapi/gpt-5-mini",
+        "thinking": "off",
         "maxConcurrent": 3,
         "archiveAfterMinutes": 30
       },
@@ -25,33 +25,35 @@
           "workflow-orchestration-patterns",
           "summarize",
           "session-logs",
-          "data-analyst"
+          "deep-research"
         ],
         "subagents": {
           "allowAgents": [
-            "coder",
-            "researcher"
+            "researcher",
+            "reviewer"
           ]
         }
       },
       {
-        "id": "coder",
-        "name": "Coding Agent",
-        "model": "dmxapi/gpt-5.4-mini",
+        "id": "researcher",
+        "name": "Research Agent",
+        "model": "dmxapi/gpt-5-mini",
         "skills": [
-          "coding-agent",
-          "code-style",
-          "github",
-          "debugger"
+          "tavily",
+          "academic-researcher",
+          "sympy",
+          "hypothesis-generation",
+          "plotly",
+          "math-olympiad"
         ]
       },
       {
-        "id": "researcher",
-        "name": "Research Agent",
-        "model": "dmxapi/gpt-5.4-mini",
+        "id": "reviewer",
+        "name": "Science Reviewer",
+        "model": "dmxapi/gpt-5-mini",
         "skills": [
-          "tavily",
-          "search-first",
+          "scientific-writing",
+          "citation-management",
           "data-analyst",
           "summarize"
         ]

@@ -1,0 +1,7 @@
+{
+    "id": "baseline-hooks",
+    "name": "Baseline Optimization Hooks",
+    "description": "Bridges Baseline token-efficiency modules (cache, summary, compression, retrieval, router) into OpenClaw via plugin hooks. Controlled by ECOCLAW_ENABLE_* environment variables.",
+    "version": "0.1.0",
+    "configSchema": {}
+}

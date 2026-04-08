@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 
 BASELINE_DIR="${REPO_ROOT}/results/raw/pinchbench/baseline"
-ECOCLAW_DIR="${REPO_ROOT}/results/raw/pinchbench/ecoclaw"
+ECOCLAW_DIR="${REPO_ROOT}/results/raw/pinchbench/cache-only"
 REPORT_PATH="${REPO_ROOT}/results/reports/pinchbench_comparison.json"
 LOG_DIR="${REPO_ROOT}/log"
 RUN_TAG="$(date +%Y%m%d_%H%M%S)"

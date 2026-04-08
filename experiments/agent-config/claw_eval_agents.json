@@ -2,13 +2,13 @@
   "agents": {
     "defaults": {
       "model": {
-        "primary": "dmxapi/gpt-5.4-mini",
+        "primary": "dmxapi/gpt-5-mini",
         "fallbacks": []
       },
       "subagents": {
-        "model": "dmxapi/gpt-5.4-mini",
-        "thinking": "medium",
-        "maxConcurrent": 3,
+        "model": "dmxapi/gpt-5-mini",
+        "thinking": "off",
+        "maxConcurrent": 4,
         "archiveAfterMinutes": 30
       },
       "sandbox": {
@@ -25,35 +25,48 @@
           "workflow-orchestration-patterns",
           "summarize",
           "session-logs",
-          "data-analyst"
+          "saga-orchestration"
         ],
         "subagents": {
           "allowAgents": [
             "coder",
-            "researcher"
+            "researcher",
+            "reviewer"
           ]
         }
       },
       {
         "id": "coder",
         "name": "Coding Agent",
-        "model": "dmxapi/gpt-5.4-mini",
+        "model": "dmxapi/gpt-5-mini",
         "skills": [
           "coding-agent",
           "code-style",
           "github",
-          "debugger"
+          "debugger",
+          "docker-patterns"
         ]
       },
       {
         "id": "researcher",
         "name": "Research Agent",
-        "model": "dmxapi/gpt-5.4-mini",
+        "model": "dmxapi/gpt-5-mini",
         "skills": [
           "tavily",
+          "deep-research",
           "search-first",
-          "data-analyst",
-          "summarize"
+          "data-analyst"
+        ]
+      },
+      {
+        "id": "reviewer",
+        "name": "Reviewer",
+        "model": "dmxapi/gpt-5-mini",
+        "skills": [
+          "backend-code-review",
+          "healthcheck",
+          "summarize",
+          "session-logs"
         ]
       }
     ]
