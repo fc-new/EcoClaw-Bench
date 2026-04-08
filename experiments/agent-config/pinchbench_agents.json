@@ -2,13 +2,11 @@
   "agents": {
     "defaults": {
       "model": {
-        "primary": "dmx/gpt-5.4-mini",
-        "fallbacks": [
-          "dmx/gpt-5.4"
-        ]
+        "primary": "dmxapi/gpt-5.4-mini",
+        "fallbacks": []
       },
       "subagents": {
-        "model": "dmx/gpt-5.4-mini",
+        "model": "dmxapi/gpt-5.4-mini",
         "thinking": "medium",
         "maxConcurrent": 3,
         "archiveAfterMinutes": 30
@@ -22,7 +20,7 @@
         "id": "coordinator",
         "default": true,
         "name": "Orchestrator",
-        "model": "dmx/gpt-5.4-mini",
+        "model": "dmxapi/gpt-5.4-mini",
         "skills": [
           "workflow-orchestration-patterns",
           "summarize",
@@ -39,7 +37,7 @@
       {
         "id": "coder",
         "name": "Coding Agent",
-        "model": "dmx/gpt-5.4-mini",
+        "model": "dmxapi/gpt-5.4-mini",
         "skills": [
           "coding-agent",
           "code-style",
@@ -50,7 +48,7 @@
       {
         "id": "researcher",
         "name": "Research Agent",
-        "model": "dmx/gpt-5.4-mini",
+        "model": "dmxapi/gpt-5.4-mini",
         "skills": [
           "tavily",
           "search-first",
