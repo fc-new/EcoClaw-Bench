@@ -15,6 +15,8 @@
 # Usage:
 #   # Run a single method in MAS mode (轻量模式 — all agents use same model):
 #   ./experiments/scripts/run_pinchbench_methods_mas.sh --label ccr-only
+#   ./experiments/scripts/run_pinchbench_methods_mas.sh --label evermemos
+#   ./experiments/scripts/run_pinchbench_methods_mas.sh --label token-opt
 #
 #   # Run a single method with full agent-config (推荐 — per-agent model/skills):
 #   ./experiments/scripts/run_pinchbench_methods_mas.sh --label ccr-only \
@@ -82,13 +84,22 @@ RESOLVED_RUNS="${RUNS:-${ECOCLAW_RUNS:-1}}"
 RESOLVED_TIMEOUT="${TIMEOUT_MULTIPLIER:-${ECOCLAW_TIMEOUT_MULTIPLIER:-1.0}}"
 RESOLVED_MULTI_AGENT_ROLES="${MULTI_AGENT_ROLES:-${ECOCLAW_MULTI_AGENT_ROLES:-researcher,coder}}"
 
-# Resolve agent-config to absolute path early (before any cd)
-RESOLVED_AGENT_CONFIG="${AGENT_CONFIG:-${ECOCLAW_AGENT_CONFIG:-}}"
-if [[ -n "${RESOLVED_AGENT_CONFIG}" ]]; then
-  RESOLVED_AGENT_CONFIG="$(cd "$(dirname "${RESOLVED_AGENT_CONFIG}")" && pwd)/$(basename "${RESOLVED_AGENT_CONFIG}")"
+# Resolve agent-config to absolute path early (before any cd).
+# MAS runner only uses explicit --agent-config to avoid accidental overrides
+# from .env (e.g., stale ECOCLAW_AGENT_CONFIG with incompatible models).
+RESOLVED_AGENT_CONFIG="${AGENT_CONFIG:-}"
+if [[ -z "${AGENT_CONFIG:-}" && -n "${ECOCLAW_AGENT_CONFIG:-}" ]]; then
+  echo "Ignoring ECOCLAW_AGENT_CONFIG from .env for MAS runner. Pass --agent-config explicitly if needed."
 fi
-
-SKILL_DIR="$(resolve_skill_dir)"
+if [[ -n "${RESOLVED_AGENT_CONFIG}" ]]; then
+  if [[ "${RESOLVED_AGENT_CONFIG}" != /* ]]; then
+    RESOLVED_AGENT_CONFIG="${REPO_ROOT}/${RESOLVED_AGENT_CONFIG}"
+  fi
+  RESOLVED_AGENT_CONFIG="$(cd "$(dirname "${RESOLVED_AGENT_CONFIG}")" && pwd)/$(basename "${RESOLVED_AGENT_CONFIG}")"
+  export ECOCLAW_AGENT_CONFIG="${RESOLVED_AGENT_CONFIG}"
+else
+  unset ECOCLAW_AGENT_CONFIG || true
+fi
 
 # ── Cleanup: reset all gateway-level plugins to safe defaults ─────────────────
 
@@ -96,6 +107,8 @@ reset_gateway_plugins() {
   echo "  🔄 Resetting gateway plugins to defaults..."
   openclaw config set plugins.entries.lycheemem-tools.enabled false 2>/dev/null || true
   openclaw config set plugins.entries.lossless-claw.enabled false 2>/dev/null || true
+  openclaw config set plugins.entries.evermemos-openclaw-plugin.enabled false 2>/dev/null || true
+  openclaw config set plugins.slots.memory memory-core 2>/dev/null || true
   openclaw config set agents.defaults.compaction.mode default 2>/dev/null || true
   openclaw gateway restart 2>/dev/null || true
   sleep 3
@@ -138,6 +151,18 @@ inject_mas_config() {
 
 run_single() {
   local label="$1"
+  local token_opt_enabled=0
+  local evermemos_enabled=0
+  local config_patched=0
+  local token_opt_script="${REPO_ROOT}/experiments/methods/static_tuning/openclaw-token-optimization-main/apply-preset.js"
+  local evermemos_plugin_name="${ECOCLAW_EVERMEMOS_PLUGIN_NAME:-evermemos-openclaw-plugin}"
+  local evermemos_plugin_dir="${ECOCLAW_EVERMEMOS_PLUGIN_DIR:-${REPO_ROOT}/experiments/methods/retrieval/EverMemOS-agent_memory/evermemos-openclaw-plugin}"
+  local evermemos_base_url="${ECOCLAW_EVERMEMOS_BASE_URL:-http://localhost:1995}"
+  local evermemos_user_id="${ECOCLAW_EVERMEMOS_USER_ID:-evermemos-user}"
+  local evermemos_group_id="${ECOCLAW_EVERMEMOS_GROUP_ID:-evermemos-group}"
+  local evermemos_top_k="${ECOCLAW_EVERMEMOS_TOP_K:-5}"
+  local evermemos_retrieve_method="${ECOCLAW_EVERMEMOS_RETRIEVE_METHOD:-hybrid}"
+  local evermemos_memory_types="${ECOCLAW_EVERMEMOS_MEMORY_TYPES:-episodic_memory,profile,agent_skill,agent_case}"
 
   # Start with all EcoClaw method modules disabled
   export ECOCLAW_ENABLE_PREFIX_CACHE=0
@@ -150,6 +175,9 @@ run_single() {
   export ECOCLAW_ENABLE_CCR=0
   export ECOCLAW_ENABLE_LLMLINGUA=0
   export ECOCLAW_ENABLE_SELCTX=0
+  export ECOCLAW_ENABLE_CONTEXT_SAVER=0
+  export ECOCLAW_ENABLE_TOKEN_SAVER=0
+  export ECOCLAW_ENABLE_ILANG=0
   export ECOCLAW_ENABLE_CONCISE=0
   export ECOCLAW_ENABLE_SLIM_PROMPT=0
   export ECOCLAW_COMPACTION_MODE=""
@@ -167,9 +195,40 @@ run_single() {
     tokenqrusher-only)
       "${SCRIPT_DIR}/enable_tokenqrusher_hooks.sh"
       ;;
+    evermemos)
+      if [[ ! -d "${evermemos_plugin_dir}" ]]; then
+        echo "EverMemOS plugin dir not found: ${evermemos_plugin_dir}" >&2
+        return 1
+      fi
+      if [[ ! -f "${evermemos_plugin_dir}/openclaw.plugin.json" ]]; then
+        echo "EverMemOS openclaw.plugin.json not found: ${evermemos_plugin_dir}/openclaw.plugin.json" >&2
+        return 1
+      fi
+      if [[ ! -f "${OPENCLAW_CONFIG_PATH}" ]]; then
+        echo "OpenClaw config not found: ${OPENCLAW_CONFIG_PATH}" >&2
+        return 1
+      fi
+      if ! command -v python3 >/dev/null 2>&1; then
+        echo "python3 is required to apply EverMemOS plugin config" >&2
+        return 1
+      fi
+      evermemos_enabled=1
+      config_patched=1
+      ;;
+    context-saver-only) export ECOCLAW_ENABLE_CONTEXT_SAVER=1 ;;
+    token-saver-only)   export ECOCLAW_ENABLE_TOKEN_SAVER=1 ;;
+    ilang-only)         export ECOCLAW_ENABLE_ILANG=1 ;;
     concise-only)       export ECOCLAW_ENABLE_CONCISE=1 ;;
     slim-prompt)        export ECOCLAW_ENABLE_SLIM_PROMPT=1 ;;
     concise-slim)       export ECOCLAW_ENABLE_CONCISE=1; export ECOCLAW_ENABLE_SLIM_PROMPT=1 ;;
+    token-opt)
+      if [[ ! -f "${token_opt_script}" ]]; then
+        echo "Token optimization preset script not found: ${token_opt_script}" >&2
+        return 1
+      fi
+      token_opt_enabled=1
+      config_patched=1
+      ;;
     lycheemem)
       # Enable LycheeMem plugin, disable other memory/compaction methods
       openclaw config set plugins.entries.lycheemem-tools.enabled true 2>/dev/null || true
@@ -229,6 +288,8 @@ run_single() {
     openclaw config set agents.defaults.compaction.mode default 2>/dev/null || true
     openclaw config set plugins.entries.lossless-claw.enabled false 2>/dev/null || true
     openclaw config set plugins.entries.lycheemem-tools.enabled false 2>/dev/null || true
+    openclaw config set plugins.entries.evermemos-openclaw-plugin.enabled false 2>/dev/null || true
+    openclaw config set plugins.slots.memory memory-core 2>/dev/null || true
     openclaw gateway restart 2>/dev/null || true
     sleep 3
   fi
@@ -240,8 +301,9 @@ run_single() {
   echo "  Agent Config: ${RESOLVED_AGENT_CONFIG:-<lightweight mode>}"
   echo "  PREFIX_CACHE=${ECOCLAW_ENABLE_PREFIX_CACHE}  CACHE=${ECOCLAW_ENABLE_CACHE}  SUMMARY=${ECOCLAW_ENABLE_SUMMARY}"
   echo "  COMPRESSION=${ECOCLAW_ENABLE_COMPRESSION}  RETRIEVAL=${ECOCLAW_ENABLE_RETRIEVAL}  ROUTER=${ECOCLAW_ENABLE_ROUTER}"
-  echo "  QMD=${ECOCLAW_ENABLE_QMD}  CCR=${ECOCLAW_ENABLE_CCR}  LLMLINGUA=${ECOCLAW_ENABLE_LLMLINGUA}  SELCTX=${ECOCLAW_ENABLE_SELCTX}"
+  echo "  QMD=${ECOCLAW_ENABLE_QMD}  CCR=${ECOCLAW_ENABLE_CCR}  LLMLINGUA=${ECOCLAW_ENABLE_LLMLINGUA}  SELCTX=${ECOCLAW_ENABLE_SELCTX}  EVERMEMOS=${evermemos_enabled}  CONTEXT_SAVER=${ECOCLAW_ENABLE_CONTEXT_SAVER}  TOKEN_SAVER=${ECOCLAW_ENABLE_TOKEN_SAVER}  ILANG=${ECOCLAW_ENABLE_ILANG}"
   echo "  CONCISE=${ECOCLAW_ENABLE_CONCISE}  SLIM_PROMPT=${ECOCLAW_ENABLE_SLIM_PROMPT}"
+  echo "  TOKEN_OPT=${token_opt_enabled}"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo ""
 
@@ -259,6 +321,54 @@ run_single() {
     restore_openclaw_config || true
   }
   trap _mas_bench_exit_cleanup EXIT
+
+  if [[ "${evermemos_enabled}" == "1" ]]; then
+    python3 - <<'PY' "${OPENCLAW_CONFIG_PATH}" "${evermemos_plugin_dir}" "${evermemos_plugin_name}" "${evermemos_base_url}" "${evermemos_user_id}" "${evermemos_group_id}" "${evermemos_top_k}" "${evermemos_retrieve_method}" "${evermemos_memory_types}"
+import json
+import sys
+from pathlib import Path
+
+config_path = Path(sys.argv[1])
+plugin_dir = sys.argv[2]
+plugin_name = sys.argv[3]
+base_url = sys.argv[4]
+user_id = sys.argv[5]
+group_id = sys.argv[6]
+top_k = int(sys.argv[7])
+retrieve_method = sys.argv[8]
+memory_types = [x.strip() for x in sys.argv[9].split(",") if x.strip()]
+
+data = json.loads(config_path.read_text(encoding="utf-8"))
+plugins = data.setdefault("plugins", {})
+slots = plugins.setdefault("slots", {})
+slots["memory"] = plugin_name
+load = plugins.setdefault("load", {})
+paths = load.setdefault("paths", [])
+if plugin_dir not in paths:
+    paths.append(plugin_dir)
+entries = plugins.setdefault("entries", {})
+entry = entries.setdefault(plugin_name, {})
+entry["enabled"] = True
+entry_cfg = entry.setdefault("config", {})
+entry_cfg["baseUrl"] = base_url
+entry_cfg["userId"] = user_id
+entry_cfg["groupId"] = group_id
+entry_cfg["topK"] = top_k
+entry_cfg["memoryTypes"] = memory_types
+entry_cfg["retrieveMethod"] = retrieve_method
+
+config_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+print(config_path)
+PY
+    openclaw gateway restart 2>/dev/null || true
+    sleep 3
+  fi
+
+  if [[ "${token_opt_enabled}" == "1" ]]; then
+    node "${token_opt_script}"
+    openclaw gateway restart 2>/dev/null || true
+    sleep 3
+  fi
 
   # ── Build benchmark.py arguments ────────────────────────────────────────
   local bench_args=(
@@ -295,9 +405,13 @@ run_single() {
   restore_openclaw_config || true
   # Reset the EXIT trap since we've already restored
   trap - EXIT
+  if [[ "${config_patched}" == "1" ]]; then
+    openclaw gateway restart 2>/dev/null || true
+    sleep 3
+  fi
 
   case "${label}" in
-    lycheemem|compaction|compaction-lcm|baseline)
+    lycheemem|compaction|compaction-lcm|baseline|evermemos)
       reset_gateway_plugins
       ;;
     openspace|openspace-cold|openspace-hot|openspace-compaction)
@@ -318,9 +432,14 @@ ALL_LABELS=(
   llmlingua-only
   selctx-only
   tokenqrusher-only
+  evermemos
+  context-saver-only
+  token-saver-only
+  ilang-only
   concise-only
   slim-prompt
   concise-slim
+  token-opt
   lycheemem
   compaction
   compaction-lcm
