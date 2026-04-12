@@ -1,0 +1,20 @@
+{
+  "id": "openspace-tools",
+  "name": "OpenSpace Tools",
+  "description": "Self-evolving skill engine for OpenClaw. Delegates tasks to OpenSpace's grounding agent, which learns and reuses successful execution patterns to cut token costs over time.",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "baseUrl": {
+        "type": "string",
+        "default": "http://127.0.0.1:8081"
+      },
+      "timeout": {
+        "type": "number",
+        "default": 600
+      }
+    }
+  }
+}

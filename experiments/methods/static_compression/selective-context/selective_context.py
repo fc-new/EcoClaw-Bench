@@ -33,7 +33,7 @@ import numpy as np
 
 # Config
 MODEL_NAME = os.environ.get("SC_MODEL", "gpt2")
-DEFAULT_RATIO = float(os.environ.get("SC_REDUCE_RATIO", "0.3"))
+DEFAULT_RATIO = float(os.environ.get("SC_REDUCE_RATIO", "0.4"))
 DEFAULT_UNIT = os.environ.get("SC_UNIT", "sentence")
 
 # Lazy-load model

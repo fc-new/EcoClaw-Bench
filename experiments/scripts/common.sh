@@ -274,6 +274,144 @@ print(f"Injected multi-agent config: model={sa_model} thinking={sa_thinking} max
 INJECT_PY
 }
 
+# ---------------------------------------------------------------------------
+# OpenSpace MCP management
+# ---------------------------------------------------------------------------
+
+OPENSPACE_SERVER_PID_FILE="/tmp/openspace_mcp_bench.pid"
+
+start_openspace_server() {
+  # mode: "cold" (default, Phase 1 — build skill library via execute_task)
+  #       "hot"  (Phase 2 — reuse skills from cold run via search_skills)
+  local mode="${1:-${OPENSPACE_MODE:-cold}}"
+  local port="${OPENSPACE_PORT:-${ECOCLAW_OPENSPACE_PORT:-8081}}"
+  local workspace="${OPENSPACE_WORKSPACE:-${ECOCLAW_OPENSPACE_WORKSPACE:-}}"
+  local skill_dirs="${OPENSPACE_HOST_SKILL_DIRS:-${ECOCLAW_OPENSPACE_SKILL_DIRS:-}}"
+  # Expand leading ~ that import_dotenv does not expand (it uses read -r, not eval)
+  workspace="${workspace/#\~/$HOME}"
+  skill_dirs="${skill_dirs/#\~/$HOME}"
+
+  if [[ -f "${OPENSPACE_SERVER_PID_FILE}" ]]; then
+    local existing_pid
+    existing_pid="$(cat "${OPENSPACE_SERVER_PID_FILE}")"
+    if kill -0 "${existing_pid}" 2>/dev/null; then
+      echo "OpenSpace MCP server already running (pid=${existing_pid}, mode=${mode})"
+      return 0
+    fi
+    rm -f "${OPENSPACE_SERVER_PID_FILE}"
+  fi
+
+  # ECOCLAW_OPENSPACE_MCP_CMD allows pointing to openspace-mcp in a different Python env
+  # e.g. ECOCLAW_OPENSPACE_MCP_CMD=/home/user/anaconda3/bin/openspace-mcp
+  local mcp_cmd="${OPENSPACE_MCP_CMD:-${ECOCLAW_OPENSPACE_MCP_CMD:-openspace-mcp}}"
+
+  echo "Starting OpenSpace MCP server on port ${port} (cmd: ${mcp_cmd}, mode: ${mode})..."
+  local env_prefix=()
+  [[ -n "${workspace}" ]]   && env_prefix+=(OPENSPACE_WORKSPACE="${workspace}")
+  [[ -n "${skill_dirs}" ]]  && env_prefix+=(OPENSPACE_HOST_SKILL_DIRS="${skill_dirs}")
+  [[ -n "${OPENSPACE_API_KEY:-}" ]]     && env_prefix+=(OPENSPACE_API_KEY="${OPENSPACE_API_KEY}")
+  # LLM for OpenSpace's internal grounding agent (execute_task).
+  # Set OPENSPACE_MODEL / OPENSPACE_LLM_API_KEY / OPENSPACE_LLM_API_BASE in .env.
+  [[ -n "${OPENSPACE_MODEL:-}" ]]       && env_prefix+=(OPENSPACE_MODEL="${OPENSPACE_MODEL}")
+  [[ -n "${OPENSPACE_LLM_API_KEY:-}" ]] && env_prefix+=(OPENSPACE_LLM_API_KEY="${OPENSPACE_LLM_API_KEY}")
+  [[ -n "${OPENSPACE_LLM_API_BASE:-}" ]] && env_prefix+=(OPENSPACE_LLM_API_BASE="${OPENSPACE_LLM_API_BASE}")
+  # Pass mode to the plugin via env so the before_prompt_build hook switches behavior
+  env_prefix+=(OPENSPACE_MODE="${mode}")
+
+  env "${env_prefix[@]}" nohup "${mcp_cmd}" \
+    --transport streamable-http --host 127.0.0.1 --port "${port}" \
+    >/tmp/openspace_mcp_bench.log 2>&1 &
+  echo $! > "${OPENSPACE_SERVER_PID_FILE}"
+
+  local attempts=0
+  while [[ ${attempts} -lt 20 ]]; do
+    if nc -z 127.0.0.1 "${port}" 2>/dev/null; then
+      echo "OpenSpace MCP server ready (pid=$(cat "${OPENSPACE_SERVER_PID_FILE}"), port=${port})"
+      return 0
+    fi
+    attempts=$((attempts + 1))
+    sleep 1
+  done
+  echo "ERROR: OpenSpace MCP server failed to start. See /tmp/openspace_mcp_bench.log" >&2
+  return 1
+}
+
+stop_openspace_server() {
+  if [[ ! -f "${OPENSPACE_SERVER_PID_FILE}" ]]; then
+    return 0
+  fi
+  local pid
+  pid="$(cat "${OPENSPACE_SERVER_PID_FILE}")"
+  if kill -0 "${pid}" 2>/dev/null; then
+    kill "${pid}" 2>/dev/null || true
+    sleep 1
+    echo "OpenSpace MCP server stopped (pid=${pid})"
+  fi
+  rm -f "${OPENSPACE_SERVER_PID_FILE}"
+}
+
+register_openspace_plugin() {
+  local port="${OPENSPACE_PORT:-${ECOCLAW_OPENSPACE_PORT:-8081}}"
+  local plugin_dir
+  plugin_dir="$(cd "${REPO_ROOT}/experiments/methods/retrieval/openspace/openclaw-plugin" && pwd)"
+
+  echo "Enabling openspace-tools plugin (port ${port})..."
+
+  # Inject plugin path into plugins.load.paths and enable the plugin entry.
+  # NOTE: This version of OpenClaw (2026.3.13) does not have `openclaw mcp set`,
+  # so we register via the plugin system instead. The plugin proxies the 4 MCP
+  # tools with parameter schemas that match the actual openspace-mcp tool
+  # signatures (execute_task/search_skills/fix_skill/upload_skill).
+  python3 - "${OPENCLAW_CONFIG_PATH}" "${plugin_dir}" "${port}" <<'INJECT_PY'
+import json, sys
+config_path, plugin_dir, port = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(config_path, "r", encoding="utf-8") as f:
+    cfg = json.load(f)
+
+# Add plugin dir to plugins.load.paths (deduplicated)
+plugins = cfg.setdefault("plugins", {})
+load = plugins.setdefault("load", {})
+paths = load.get("paths", [])
+if plugin_dir not in paths:
+    paths.append(plugin_dir)
+load["paths"] = paths
+
+# Enable the plugin entry with baseUrl pointing to the running server
+entries = plugins.setdefault("entries", {})
+entries["openspace-tools"] = {
+    "enabled": True,
+    "hooks": {
+        "allowPromptInjection": True
+    },
+    "config": {
+        "baseUrl": f"http://127.0.0.1:{port}",
+        "timeout": 600
+    }
+}
+
+# tools.profile="coding" creates an allowlist of only core coding tools; plugin
+# tools registered via api.registerTool() are not in that list and are silently
+# filtered out before the LLM sees them.
+# tools.alsoAllow appends to the profile allowlist (valid because tools.allow is
+# not set — setting both allow+alsoAllow is an error). "group:plugins" expands
+# to all currently-loaded plugin tool names at runtime.
+tools_cfg = cfg.setdefault("tools", {})
+tools_cfg["alsoAllow"] = ["group:plugins"]
+
+with open(config_path, "w", encoding="utf-8") as f:
+    json.dump(cfg, f, indent=2, ensure_ascii=False)
+    f.write("\n")
+print(f"Registered openspace-tools plugin (dir={plugin_dir}, port={port}), added group:plugins to tools.alsoAllow")
+INJECT_PY
+}
+
+unregister_openspace_plugin() {
+  echo "Disabling openspace-tools plugin..."
+  openclaw config set plugins.entries.openspace-tools.enabled false 2>/dev/null || true
+  # Remove the group:plugins alsoAllow added for OpenSpace so other runs are not affected
+  openclaw config unset tools.alsoAllow 2>/dev/null || true
+}
+
 inject_agent_config_from_file() {
   local agent_config_json="${1:?agent config JSON file is required}"
   local skills_dir="${2:-}"

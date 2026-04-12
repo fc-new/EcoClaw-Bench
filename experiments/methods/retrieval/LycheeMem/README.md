@@ -5,26 +5,32 @@
 ## 运行实验
 
 ```bash
-# 1. 启动 LycheeMem 后端（在另一个终端）
-cd /home/user/cdm_program/Baseline-Bench/experiments/methods/LycheeMem
-PYTHONPATH=/home/user/cdm_program/Baseline-Bench python main.py
-# 等待显示 Uvicorn running on http://127.0.0.1:8000
+# 0. 安装依赖（需要 Python 3.11+）
+cd /path/to/EcoClaw-Bench/experiments/methods/retrieval/LycheeMem
+pip install -e .
 
-# 2a. 单 Agent 模式
+# 1. 配置：复制 .env.example 为 .env，填写 LLM / Embedding（见下表）
+
+# 2. 启动 LycheeMem 后端（保持该终端运行）
+python main.py
+# 看到类似：LycheeMem server starting on http://0.0.0.0:8000
+# API 文档：http://127.0.0.1:8000/docs
+
+# 3. （可选）注册并拿到 JWT，写入 OpenClaw 插件配置 —— 见下文「获取 Token」
+
+# 4. 在仓库根目录另开终端跑 PinchBench（会启用 lycheemem-tools 插件）
+cd /path/to/EcoClaw-Bench
 ./experiments/scripts/run_pinchbench_methods.sh --label lycheemem
 
-# 2b. 多智能体 (MAS) 模式
+# 多智能体 (MAS) 模式
 ./experiments/scripts/run_pinchbench_methods_mas.sh --label lycheemem \
   --agent-config experiments/agent-config/pinchbench_agents.json
 ```
 
 ## 前置条件
 
-```bash
-# 安装依赖（需要 Python 3.11+，在 base 环境）
-cd experiments/methods/LycheeMem
-pip install -e .
-```
+- Python **3.11+**
+- 已安装 [OpenClaw](https://github.com/openclaw/openclaw) CLI，且 gateway 可被 `openclaw config` 修改（`lycheemem` 标签会打开插件并 `gateway restart`）
 
 ## 配置
 

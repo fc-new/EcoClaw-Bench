@@ -29,7 +29,7 @@ MODEL_PATH = os.environ.get(
         "local_models/llmlingua-2-xlm-roberta-large-meetingbank",
     ),
 )
-DEFAULT_RATE = float(os.environ.get("LLMLINGUA_RATE", "0.3"))
+DEFAULT_RATE = float(os.environ.get("LLMLINGUA_RATE", "0.4"))
 DEVICE = os.environ.get("LLMLINGUA_DEVICE", "cpu")
 
 # Lazy-load compressor (heavy import)

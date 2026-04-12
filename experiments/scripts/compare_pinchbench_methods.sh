@@ -103,7 +103,7 @@ manual_entries = json.loads(sys.argv[3])
 
 ALL_LABELS = ["baseline", "prefix-cache", "cache-only", "summary-only", "compression-only",
               "retrieval-only", "router-only", "qmd-only", "qmd-vsearch", "qmd-query",
-              "ccr-only", "llmlingua-only", "selctx-only"]
+              "ccr-only", "llmlingua-only", "selctx-only", "tokenqrusher-only"]
 
 def extract_metrics(payload):
     scores = [float(t["grading"]["mean"]) for t in payload.get("tasks", [])]

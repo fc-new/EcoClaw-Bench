@@ -11,6 +11,7 @@
 #   ./experiments/scripts/run_pinchbench_methods.sh --label ccr-only
 #   ./experiments/scripts/run_pinchbench_methods.sh --label llmlingua-only
 #   ./experiments/scripts/run_pinchbench_methods.sh --label selctx-only
+#   ./experiments/scripts/run_pinchbench_methods.sh --label tokenqrusher-only
 #   ./experiments/scripts/run_pinchbench_methods.sh --label concise-only
 #
 # Or run all 6 in sequence:
@@ -47,7 +48,7 @@ while [[ $# -gt 0 ]]; do
     --timeout-multiplier) TIMEOUT_MULTIPLIER="${2:-}"; shift 2 ;;
     *)
       echo "Unknown argument: $1" >&2
-      echo "Usage: $0 --label <baseline|prefix-cache|qmd-only|qmd-vsearch|qmd-query|ccr-only|llmlingua-only|selctx-only|concise-only|slim-prompt|concise-slim|lycheemem|compaction|compaction-lcm>" >&2
+      echo "Usage: $0 --label <baseline|prefix-cache|qmd-only|qmd-vsearch|qmd-query|ccr-only|llmlingua-only|selctx-only|tokenqrusher-only|concise-only|slim-prompt|concise-slim|lycheemem|compaction|compaction-lcm|openspace-cold|openspace-hot|openspace-compaction>" >&2
       echo "       $0 --all" >&2
       exit 1
       ;;
@@ -67,7 +68,13 @@ RESOLVED_SUITE="${SUITE:-${ECOCLAW_SUITE:-automated-only}}"
 RESOLVED_RUNS="${RUNS:-${ECOCLAW_RUNS:-1}}"
 RESOLVED_TIMEOUT="${TIMEOUT_MULTIPLIER:-${ECOCLAW_TIMEOUT_MULTIPLIER:-1.0}}"
 
-SKILL_DIR="$(resolve_skill_dir)"
+# PinchBench code + tasks + assets: this repo copy (not external EcoClaw/skill).
+PINCHBENCH_ROOT="${REPO_ROOT}/experiments/dataset/pinchbench"
+PINCHBENCH_BENCHMARK_PY="${PINCHBENCH_ROOT}/scripts/benchmark.py"
+if [[ ! -f "${PINCHBENCH_BENCHMARK_PY}" ]]; then
+  printf 'PinchBench benchmark not found: %s\n' "${PINCHBENCH_BENCHMARK_PY}" >&2
+  exit 1
+fi
 
 # ── Cleanup: reset all gateway-level plugins to safe defaults ─────────────────
 
@@ -79,6 +86,12 @@ reset_gateway_plugins() {
   openclaw gateway restart 2>/dev/null || true
   sleep 3
   echo "  ✅ Gateway plugins reset"
+}
+
+reset_openspace() {
+  stop_openspace_server
+  unregister_openspace_plugin
+  reset_gateway_plugins
 }
 
 # ── Single-label run function ─────────────────────────────────────────────────
@@ -111,6 +124,10 @@ run_single() {
     ccr-only)           export ECOCLAW_ENABLE_CCR=1 ;;
     llmlingua-only)     export ECOCLAW_ENABLE_LLMLINGUA=1 ;;
     selctx-only)        export ECOCLAW_ENABLE_SELCTX=1 ;;
+    tokenqrusher-only)
+      # OpenClaw hooks from ClawHub (token-context + token-heartbeat), not ECOCLAW baseline-hooks
+      "${SCRIPT_DIR}/enable_tokenqrusher_hooks.sh"
+      ;;
     concise-only)       export ECOCLAW_ENABLE_CONCISE=1 ;;
     slim-prompt)        export ECOCLAW_ENABLE_SLIM_PROMPT=1 ;;
     concise-slim)       export ECOCLAW_ENABLE_CONCISE=1; export ECOCLAW_ENABLE_SLIM_PROMPT=1 ;;
@@ -136,20 +153,54 @@ run_single() {
       openclaw gateway restart 2>/dev/null || true
       sleep 3
       ;;
+    openspace|openspace-cold)
+      # OpenSpace Phase 1 — cold start: agent delegates ALL tasks via execute_task
+      # so OpenSpace's internal agent runs them and captures skills into the registry.
+      start_openspace_server cold
+      register_openspace_plugin
+      openclaw gateway restart 2>/dev/null || true
+      sleep 3
+      ;;
+    openspace-hot)
+      # OpenSpace Phase 2 — hot rerun: skill library is pre-populated from a cold run.
+      # Agent searches first (search_skills), then follows or delegates via execute_task.
+      # Run openspace-cold first to populate the skill library before using this label.
+      start_openspace_server hot
+      register_openspace_plugin
+      openclaw gateway restart 2>/dev/null || true
+      sleep 3
+      ;;
+    openspace-compaction)
+      # OpenSpace + safeguard compaction
+      start_openspace_server
+      register_openspace_plugin
+      openclaw config set agents.defaults.compaction.mode safeguard 2>/dev/null || true
+      openclaw config set plugins.entries.lossless-claw.enabled false 2>/dev/null || true
+      openclaw gateway restart 2>/dev/null || true
+      sleep 3
+      ;;
     *)
       echo "Unknown label: ${label}" >&2
-      echo "Valid labels: baseline, prefix-cache, qmd-only, qmd-vsearch, qmd-query, ccr-only, llmlingua-only, selctx-only, concise-only, slim-prompt, concise-slim, lycheemem, compaction, compaction-lcm" >&2
+      echo "Valid labels: baseline, prefix-cache, qmd-only, qmd-vsearch, qmd-query, ccr-only, llmlingua-only, selctx-only, tokenqrusher-only, concise-only, slim-prompt, concise-slim, lycheemem, compaction, compaction-lcm, openspace, openspace-compaction" >&2
       return 1
       ;;
   esac
 
-  # For baseline: ensure compaction is in default mode and all extra plugins disabled
-  if [[ "${label}" == "baseline" ]]; then
+  # For baseline / tokenqrusher: ensure compaction is in default mode and all extra plugins disabled
+  if [[ "${label}" == "baseline" || "${label}" == "tokenqrusher-only" ]]; then
     openclaw config set agents.defaults.compaction.mode default 2>/dev/null || true
     openclaw config set plugins.entries.lossless-claw.enabled false 2>/dev/null || true
     openclaw config set plugins.entries.lycheemem-tools.enabled false 2>/dev/null || true
     openclaw gateway restart 2>/dev/null || true
     sleep 3
+  fi
+
+  # tokenQrusher hooks: always tear down when this run ends (success, failure, or interrupt).
+  if [[ "${label}" == "tokenqrusher-only" ]]; then
+    _tokenqrusher_pinchbench_cleanup() {
+      "${SCRIPT_DIR}/disable_tokenqrusher_hooks.sh" || true
+    }
+    trap _tokenqrusher_pinchbench_cleanup EXIT INT TERM
   fi
 
   echo ""
@@ -159,14 +210,15 @@ run_single() {
   echo "  PREFIX_CACHE=${ECOCLAW_ENABLE_PREFIX_CACHE}  QMD=${ECOCLAW_ENABLE_QMD}  CCR=${ECOCLAW_ENABLE_CCR}"
   echo "  LLMLINGUA=${ECOCLAW_ENABLE_LLMLINGUA}  SELCTX=${ECOCLAW_ENABLE_SELCTX}"
   echo "  CONCISE=${ECOCLAW_ENABLE_CONCISE}  SLIM_PROMPT=${ECOCLAW_ENABLE_SLIM_PROMPT}"
+  echo "  PinchBench: ${PINCHBENCH_ROOT}"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo ""
 
   local output_dir="${REPO_ROOT}/results/raw/pinchbench/${label}"
   mkdir -p "${output_dir}"
 
-  cd "${SKILL_DIR}"
-  uv run /home/user/cdm_program/EcoClaw/skill/scripts/benchmark.py \
+  cd "${PINCHBENCH_ROOT}"
+  uv run "${PINCHBENCH_BENCHMARK_PY}" \
     --model "${RESOLVED_MODEL}" \
     --judge "${RESOLVED_JUDGE}" \
     --suite "${RESOLVED_SUITE}" \
@@ -179,17 +231,25 @@ run_single() {
   echo "  ✅ ${label} complete → ${output_dir}"
   echo ""
 
+  if [[ "${label}" == "tokenqrusher-only" ]]; then
+    trap - EXIT INT TERM
+    "${SCRIPT_DIR}/disable_tokenqrusher_hooks.sh" || true
+  fi
+
   # Auto-cleanup: disable gateway-level plugins after each run
   case "${label}" in
     lycheemem|compaction|compaction-lcm|baseline)
       reset_gateway_plugins
+      ;;
+    openspace|openspace-cold|openspace-hot|openspace-compaction)
+      reset_openspace
       ;;
   esac
 }
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-ALL_LABELS=(baseline prefix-cache qmd-only qmd-vsearch qmd-query ccr-only llmlingua-only selctx-only concise-only slim-prompt concise-slim lycheemem compaction compaction-lcm)
+ALL_LABELS=(baseline prefix-cache qmd-only qmd-vsearch qmd-query ccr-only llmlingua-only selctx-only tokenqrusher-only concise-only slim-prompt concise-slim lycheemem compaction compaction-lcm openspace-cold openspace-hot openspace-compaction)
 
 if [[ "${RUN_ALL}" == "true" ]]; then
   echo "Running all ${#ALL_LABELS[@]} ablation experiments..."
@@ -204,7 +264,7 @@ if [[ "${RUN_ALL}" == "true" ]]; then
 elif [[ -n "${LABEL}" ]]; then
   run_single "${LABEL}"
 else
-  echo "Usage: $0 --label <baseline|prefix-cache|qmd-only|qmd-vsearch|qmd-query|ccr-only|llmlingua-only|selctx-only|concise-only|slim-prompt|concise-slim|lycheemem|compaction|compaction-lcm>" >&2
+  echo "Usage: $0 --label <baseline|prefix-cache|qmd-only|qmd-vsearch|qmd-query|ccr-only|llmlingua-only|selctx-only|tokenqrusher-only|concise-only|slim-prompt|concise-slim|lycheemem|compaction|compaction-lcm|openspace-cold|openspace-hot|openspace-compaction>" >&2
   echo "       $0 --all" >&2
   exit 1
 fi
