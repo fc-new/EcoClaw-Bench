@@ -35,8 +35,10 @@ done
 
 import_dotenv
 apply_ecoclaw_env
-ensure_openclaw_gateway_running
+export ECOCLAW_FORCE_GATEWAY_RESTART="${ECOCLAW_FORCE_GATEWAY_RESTART:-true}"
 recover_stale_openclaw_config_backup
+ensure_ecoclaw_plugin_config
+ensure_openclaw_gateway_running
 
 if [[ -z "${ECOCLAW_SKILL_DIR:-}" && -d "${REPO_ROOT}/pinchbench-skill" ]]; then
   export ECOCLAW_SKILL_DIR="${REPO_ROOT}/pinchbench-skill"
@@ -80,6 +82,7 @@ LOG_DIR="${REPO_ROOT}/log"
 RUN_TAG="$(date +%Y%m%d_%H%M%S)"
 RUN_LOG_FILE="${LOG_DIR}/pinchbench_ecoclaw_${RUN_TAG}.log"
 BENCHMARK_LOG_FILE="${LOG_DIR}/pinchbench_ecoclaw_${RUN_TAG}_benchmark.log"
+RUN_START_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 mkdir -p "${OUTPUT_DIR}" "${LOG_DIR}"
 
 # Multi-agent config injection
@@ -141,8 +144,11 @@ RESULT_JSON="$(latest_json_in_dir "${OUTPUT_DIR}" || true)"
 if [[ -n "${RESULT_JSON}" ]]; then
   COST_REPORT_DIR="${REPO_ROOT}/results/reports"
   COST_REPORT_FILE="${COST_REPORT_DIR}/ecoclaw_${RUN_TAG}_cost.json"
+  REDUCTION_TRACE_FILE="${HOME}/.openclaw/ecoclaw-plugin-state/ecoclaw/reduction-pass-trace.jsonl"
+  REDUCTION_REPORT_FILE="${COST_REPORT_DIR}/ecoclaw_${RUN_TAG}_reduction_passes.json"
   mkdir -p "${COST_REPORT_DIR}"
   generate_cost_report_and_print_summary "${RESULT_JSON}" "${COST_REPORT_FILE}"
+  generate_reduction_pass_report_and_print_summary "${REDUCTION_TRACE_FILE}" "${REDUCTION_REPORT_FILE}" "${RUN_START_ISO}"
 else
   echo "Cost report skipped: no result JSON found in ${OUTPUT_DIR}" >&2
 fi

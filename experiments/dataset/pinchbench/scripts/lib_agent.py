@@ -23,6 +23,16 @@ logger = logging.getLogger(__name__)
 MAX_OPENCLAW_MESSAGE_CHARS = int(os.environ.get("PINCHBENCH_MAX_MSG_CHARS", "32000"))
 CONTEXT_HASH_PREFIX_CHARS = int(os.environ.get("PINCHBENCH_CONTEXT_HASH_PREFIX_CHARS", "1024"))
 CONTEXT_RECENT_MESSAGES = int(os.environ.get("PINCHBENCH_CONTEXT_RECENT_MESSAGES", "4"))
+OPENCLAW_AGENT_LOCAL = os.environ.get("OPENCLAW_AGENT_LOCAL", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+if os.environ.get("PINCHBENCH_OPENCLAW_CONFIG_PATH"):
+    os.environ["OPENCLAW_CONFIG_PATH"] = os.environ["PINCHBENCH_OPENCLAW_CONFIG_PATH"]
+if os.environ.get("PINCHBENCH_OPENCLAW_STATE_DIR"):
+    os.environ["OPENCLAW_STATE_DIR"] = os.environ["PINCHBENCH_OPENCLAW_STATE_DIR"]
 OPENCLAW_AGENT_LOCK_FILE = Path(
     os.environ.get("PINCHBENCH_OPENCLAW_AGENT_LOCK_FILE", "/tmp/pinchbench_openclaw_agents.lock")
 )
@@ -744,17 +754,20 @@ def execute_openclaw_task(
         run_exit_code = -1
         run_timed_out = False
         try:
+            command = [
+                "openclaw",
+                "agent",
+                "--agent",
+                agent_id,
+                "--session-id",
+                current_session_id,
+                "--message",
+                current_prompt,
+            ]
+            if OPENCLAW_AGENT_LOCAL:
+                command.append("--local")
             result = subprocess.run(
-                [
-                    "openclaw",
-                    "agent",
-                    "--agent",
-                    agent_id,
-                    "--session-id",
-                    current_session_id,
-                    "--message",
-                    current_prompt,
-                ],
+                command,
                 capture_output=True,
                 text=True,
                 cwd=str(workspace),
@@ -982,17 +995,20 @@ def run_openclaw_prompt(
             timed_out = True
             break
         try:
+            command = [
+                "openclaw",
+                "agent",
+                "--agent",
+                agent_id,
+                "--session-id",
+                session_id,
+                "--message",
+                chunk,
+            ]
+            if OPENCLAW_AGENT_LOCAL:
+                command.append("--local")
             result = subprocess.run(
-                [
-                    "openclaw",
-                    "agent",
-                    "--agent",
-                    agent_id,
-                    "--session-id",
-                    session_id,
-                    "--message",
-                    chunk,
-                ],
+                command,
                 capture_output=True,
                 text=True,
                 cwd=str(workspace),
@@ -1050,7 +1066,9 @@ def run_openclaw_prompt(
 # ---------------------------------------------------------------------------
 
 MULTI_AGENT_TIMEOUT_MULTIPLIER = 2.0
-OPENCLAW_CONFIG_PATH = Path.home() / ".openclaw" / "openclaw.json"
+OPENCLAW_CONFIG_PATH = Path(
+    os.environ.get("OPENCLAW_CONFIG_PATH", str(Path.home() / ".openclaw" / "openclaw.json"))
+)
 
 
 def _patch_agent_allow_agents(agent_id: str, allow_agent_ids: List[str]) -> None:

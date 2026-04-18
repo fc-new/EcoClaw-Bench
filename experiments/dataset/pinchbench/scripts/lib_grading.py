@@ -307,6 +307,10 @@ def _summarize_transcript(transcript: List[Dict[str, Any]]) -> str:
                     summary_parts.append(
                         f"Tool: {item.get('name')}({json.dumps(item.get('arguments', {}))})"
                     )
+                elif item.get("type") == "text":
+                    text = str(item.get("text", "")).strip()
+                    if text and text.upper() not in ("NO_REPLY", ".", ".."):
+                        summary_parts.append(f"Assistant: {text}")
         elif role == "toolResult":
             content = msg.get("content", [])
             if content:

@@ -42,6 +42,7 @@ pip-delete-this-directory.txt
 results/raw/pinchbench/
 results/raw/**/*.json
 results/reports/*.json
+# Experiment data - generated datasets
 /experiments/skills/*
 !/experiments/skills/.gitkeep
 /experiments/dataset/*

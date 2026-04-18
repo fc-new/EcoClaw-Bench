@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 
 MODEL="${MODEL:-ecoclaw/gpt-5.4}"
-JUDGE="${JUDGE:-gmn/gpt-5.4}"
+JUDGE="${JUDGE:-ecoclaw/gpt-5.4}"
 RUNS="${RUNS:-1}"
 PARALLEL="${PARALLEL:-1}"
 TIMEOUT_MULTIPLIER="${TIMEOUT_MULTIPLIER:-1.0}"

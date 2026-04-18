@@ -9,6 +9,7 @@ from the tasks/ directory.
 # requires-python = ">=3.10"
 # dependencies = [
 #     "pyyaml>=6.0.1",
+#     "python-dotenv>=1.0.0",
 # ]
 # ///
 
@@ -23,6 +24,16 @@ import sys
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Any
+
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+# scripts/ is at: EcoClaw-Bench/experiments/dataset/pinchbench/scripts/
+# .env is at: EcoClaw-Bench/.env
+# So we need to go up 5 levels
+ENV_FILE = Path(__file__).parent.parent.parent.parent.parent / ".env"
+if ENV_FILE.exists():
+    load_dotenv(ENV_FILE)
 
 from lib_agent import (
     cleanup_agent_sessions,
@@ -202,8 +213,8 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-dir",
-        default="results",
-        help="Results directory",
+        default=None,
+        help="Results directory (default: <repo_root>/results/raw/pinchbench/ecoclaw)",
     )
     parser.add_argument(
         "--register",
@@ -236,7 +247,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--parallel",
         type=int,
-        default=1,
+        default=None,
         help="Number of fully isolated task runs to execute in parallel",
     )
     parser.add_argument(
@@ -841,6 +852,14 @@ def main():
         logger.error("Missing required argument: --model (unless using --register or --upload)")
         sys.exit(2)
 
+    # Determine judge model: --judge arg > ECOCLAW_JUDGE env > default
+    judge_model = args.judge
+    if not judge_model:
+        judge_model = os.environ.get("ECOCLAW_JUDGE")
+    if not judge_model:
+        judge_model = "openrouter/anthropic/claude-opus-4.5"
+    logger.info("Using judge model: %s", judge_model)
+
     if args.register:
         try:
             from lib_upload import UploadError, register_token, save_token_config
@@ -884,9 +903,12 @@ def main():
     run_root = Path("/tmp/pinchbench")
     run_id = _next_run_id(run_root)
     skill_dir = skill_root
-    parallel_jobs = max(1, int(args.parallel or 1))
-    if parallel_jobs != args.parallel:
-        logger.warning("Invalid --parallel=%s, falling back to %s", args.parallel, parallel_jobs)
+
+    # Determine parallel jobs: --parallel arg > ECOCLAW_PARALLEL env > default 1
+    parallel_jobs = args.parallel
+    if parallel_jobs is None:
+        parallel_jobs = int(os.environ.get("ECOCLAW_PARALLEL", "1"))
+    parallel_jobs = max(1, int(parallel_jobs))
     logger.info("Parallel isolated jobs: %s", parallel_jobs)
     session_mode = args.session_mode
     logger.info("Session mode: %s", session_mode)
@@ -987,7 +1009,7 @@ def main():
                     timeout_multiplier=args.timeout_multiplier,
                     skill_dir=skill_dir,
                     verbose=args.verbose,
-                    judge_model=args.judge,
+                    judge_model=judge_model,
                     enable_multi_agent=enable_multi_agent,
                     multi_agent_roles=multi_agent_roles,
                     agent_config=agent_config,
@@ -1021,7 +1043,7 @@ def main():
                     timeout_multiplier=args.timeout_multiplier,
                     skill_dir=skill_dir,
                     verbose=args.verbose,
-                    judge_model=args.judge,
+                    judge_model=judge_model,
                     enable_multi_agent=enable_multi_agent,
                     multi_agent_roles=multi_agent_roles,
                     agent_config=agent_config,
@@ -1105,7 +1127,13 @@ def main():
             "max": max(task_scores),
         }
 
-    output_dir = Path(args.output_dir)
+    output_dir = args.output_dir
+    if not output_dir:
+        # Default to <repo_root>/results/raw/pinchbench/ecoclaw
+        # skill_root is at: EcoClaw-Bench/experiments/dataset/pinchbench/
+        # So we go up 3 levels to reach EcoClaw-Bench, then into results/raw/pinchbench/ecoclaw
+        output_dir = str(skill_root.parent.parent.parent / "results" / "raw" / "pinchbench" / "ecoclaw")
+    output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     task_entries = []
