@@ -1,0 +1,50 @@
+{
+    "id": "agentswing-context-engine",
+    "kind": "context-engine",
+    "configSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "mode": {
+                "type": "string",
+                "enum": [
+                    "keep-last-n",
+                    "summary"
+                ],
+                "description": "Context management strategy: keep-last-n truncates to N recent turns; summary compresses history into a summary"
+            },
+            "triggerMode": {
+                "type": "string",
+                "enum": [
+                    "token-ratio",
+                    "turn-count"
+                ],
+                "description": "Trigger metric: token-ratio fires on token usage ratio; turn-count fires on interaction count (default: token-ratio)"
+            },
+            "triggerRatio": {
+                "type": "number",
+                "minimum": 0.01,
+                "maximum": 0.99,
+                "description": "Trigger threshold for token-ratio mode (default: 0.4)"
+            },
+            "triggerTurnCount": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 200,
+                "description": "Trigger threshold for turn-count mode — fire when turns exceed this value (default: 10)"
+            },
+            "keepLastN": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 50,
+                "description": "Number of interaction turns to keep in keep-last-n mode (default: 5)"
+            },
+            "contextWindow": {
+                "type": "integer",
+                "minimum": 1000,
+                "description": "Override model context window size in tokens (default: inferred from tokenBudget)"
+            }
+        },
+        "required": []
+    }
+}

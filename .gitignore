@@ -214,3 +214,9 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Local working notes
+/scripts/
+
+# Plugin build artifacts
+node_modules/

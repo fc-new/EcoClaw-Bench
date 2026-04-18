@@ -542,3 +542,70 @@ if skills_dir:
     print(f"Added skills extraDir: {skills_dir}")
 INJECT_PY
 }
+
+# ── AgentSwing context engine configuration injection ──────────────
+# Injects the agentswing-context-engine plugin into openclaw.json with the
+# specified context management mode and parameters.
+# Usage: inject_context_engine_config <mode> [trigger_mode] [trigger_ratio] [trigger_turn_count] [keep_last_n] [context_window]
+#   mode:               "keep-last-n" or "summary"
+#   trigger_mode:       "token-ratio" or "turn-count", default "token-ratio"
+#   trigger_ratio:      float, default 0.4  (used when trigger_mode=token-ratio)
+#   trigger_turn_count: int, default 10     (used when trigger_mode=turn-count)
+#   keep_last_n:        int, default 5
+#   context_window:     int, optional (omit to let engine infer from tokenBudget)
+inject_context_engine_config() {
+  local mode="${1:?context mode is required (keep-last-n or summary)}"
+  local trigger_mode="${2:-token-ratio}"
+  local trigger_ratio="${3:-0.4}"
+  local trigger_turn_count="${4:-10}"
+  local keep_last_n="${5:-5}"
+  local context_window="${6:-}"
+
+python3 - "${OPENCLAW_CONFIG_PATH}" "${mode}" "${trigger_mode}" "${trigger_ratio}" "${trigger_turn_count}" "${keep_last_n}" "${context_window}" <<'INJECT_CE_PY'
+import json
+import sys
+
+config_path = sys.argv[1]
+mode = sys.argv[2]
+trigger_mode = sys.argv[3]
+trigger_ratio = float(sys.argv[4])
+trigger_turn_count = int(sys.argv[5])
+keep_last_n = int(sys.argv[6])
+context_window = sys.argv[7] if len(sys.argv) > 7 and sys.argv[7] else ""
+
+with open(config_path, "r", encoding="utf-8") as f:
+    cfg = json.load(f)
+
+# Ensure plugins section exists
+plugins = cfg.setdefault("plugins", {})
+
+# Set the active context engine slot
+slots = plugins.setdefault("slots", {})
+slots["contextEngine"] = "agentswing-context-engine"
+
+# Configure the plugin entry
+entries = plugins.setdefault("entries", {})
+entry = entries.setdefault("agentswing-context-engine", {})
+entry["enabled"] = True
+
+# Build plugin config
+plugin_config = {
+    "mode": mode,
+    "triggerMode": trigger_mode,
+    "triggerRatio": trigger_ratio,
+    "triggerTurnCount": trigger_turn_count,
+    "keepLastN": keep_last_n,
+}
+if context_window:
+    plugin_config["contextWindow"] = int(context_window)
+entry["config"] = plugin_config
+
+with open(config_path, "w", encoding="utf-8") as f:
+    json.dump(cfg, f, indent=2, ensure_ascii=False)
+    f.write("\n")
+
+print(f"Injected context engine config: mode={mode} triggerMode={trigger_mode} " +
+      f"triggerRatio={trigger_ratio} triggerTurnCount={trigger_turn_count} keepLastN={keep_last_n}" +
+      (f" contextWindow={context_window}" if context_window else ""))
+INJECT_CE_PY
+}

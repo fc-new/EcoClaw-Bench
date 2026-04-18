@@ -294,6 +294,14 @@ def _parse_args() -> argparse.Namespace:
         default=int(os.environ.get("PINCHBENCH_MAX_TOOL_CALLS_PER_TASK", "120")),
         help="Hard cap for tool calls per task (0 disables guard).",
     )
+    parser.add_argument(
+        "--context-mode",
+        type=str,
+        default=None,
+        choices=["keep-last-n", "summary"],
+        help="AgentSwing context management mode (keep-last-n or summary). "
+        "When set, records context engine metadata in output JSON.",
+    )
     return parser.parse_args()
 
 
@@ -1050,6 +1058,11 @@ def main():
                                 "end": 0,
                                 "length": 0,
                             },
+                            "call_counts": {
+                                "llm_calls": 0,
+                                "tool_calls": 0,
+                                "guard_triggered": False,
+                            },
                             "result": {
                                 "agent_id": "",
                                 "task_id": task.task_id,
@@ -1136,6 +1149,14 @@ def main():
         "enable_multi_agent": enable_multi_agent,
         "multi_agent_roles": multi_agent_roles,
         "agent_config_path": agent_config_path if agent_config else None,
+        "context_engine": {
+            "mode": args.context_mode,
+            "trigger_mode": os.environ.get("AGENTSWING_TRIGGER_MODE", "token-ratio"),
+            "trigger_ratio": float(os.environ.get("AGENTSWING_TRIGGER_RATIO", "0.4")),
+            "trigger_turn_count": int(os.environ.get("AGENTSWING_TRIGGER_TURN_COUNT", "10")),
+            "keep_last_n": int(os.environ.get("AGENTSWING_KEEP_LAST_N", "5")),
+            "context_window": int(os.environ.get("AGENTSWING_CONTEXT_WINDOW", "0")) or None,
+        } if args.context_mode else None,
         "tasks": task_entries,
         "efficiency": efficiency,
     }
