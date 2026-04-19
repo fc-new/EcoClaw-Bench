@@ -1,0 +1,49 @@
+{
+  "id": "memobrain-context-engine",
+  "name": "MemoBrain Context Engine",
+  "description": "MemoBrain-based executive memory context management for OpenClaw",
+  "version": "0.1.0",
+  "kind": "context-engine",
+  "main": "./index.js",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "adapterBaseUrl": {
+        "type": "string",
+        "description": "MemoBrain adapter base URL",
+        "default": "http://127.0.0.1:19002"
+      },
+      "triggerMode": {
+        "type": "string",
+        "enum": [
+          "token-ratio",
+          "turn-count"
+        ],
+        "default": "token-ratio"
+      },
+      "triggerRatio": {
+        "type": "number",
+        "minimum": 0.01,
+        "maximum": 0.99,
+        "default": 0.4
+      },
+      "triggerTurnCount": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 200,
+        "default": 10
+      },
+      "maxMemorySize": {
+        "type": "integer",
+        "minimum": 1024,
+        "default": 32768
+      },
+      "requestTimeoutMs": {
+        "type": "integer",
+        "minimum": 1000,
+        "default": 30000
+      }
+    }
+  }
+}
