@@ -131,6 +131,7 @@ ensure_ecoclaw_plugin_config() {
   local proxy_base_url="${ECOCLAW_BASE_URL:-https://www.dmxapi.cn/v1}"
   local proxy_api_key="${ECOCLAW_API_KEY:-}"
   local proxy_port="${ECOCLAW_PROXY_PORT:-17668}"
+  local plugin_load_path="${ECOCLAW_PLUGIN_LOAD_PATH:-${HOME}/.openclaw/extensions/ecoclaw}"
   local proxy_pure_forward="${ECOCLAW_PROXY_PURE_FORWARD:-false}"
   local reduction_trigger_min_chars="${ECOCLAW_REDUCTION_TRIGGER_MIN_CHARS:-2200}"
   local reduction_max_tool_chars="${ECOCLAW_REDUCTION_MAX_TOOL_CHARS:-1200}"
@@ -143,13 +144,25 @@ ensure_ecoclaw_plugin_config() {
   local exec_host="${ECOCLAW_EXEC_HOST:-gateway}"
   local exec_security="${ECOCLAW_EXEC_SECURITY:-full}"
   local exec_ask="${ECOCLAW_EXEC_ASK:-off}"
-
+  local enable_compaction="${ECOCLAW_ENABLE_COMPACTION:-false}"
+  local enable_eviction="${ECOCLAW_ENABLE_EVICTION:-false}"
+  local eviction_policy="${ECOCLAW_EVICTION_POLICY:-lru}"
+  local eviction_min_block_chars="${ECOCLAW_EVICTION_MIN_BLOCK_CHARS:-256}"
+  local eviction_replacement_mode="${ECOCLAW_EVICTION_REPLACEMENT_MODE:-pointer_stub}"
+  local task_state_estimator_enabled="${ECOCLAW_TASK_STATE_ESTIMATOR_ENABLED:-false}"
+  local task_state_estimator_base_url="${ECOCLAW_TASK_STATE_ESTIMATOR_BASE_URL:-}"
+  local task_state_estimator_api_key="${ECOCLAW_TASK_STATE_ESTIMATOR_API_KEY:-}"
+  local task_state_estimator_model="${ECOCLAW_TASK_STATE_ESTIMATOR_MODEL:-}"
+  local task_state_estimator_request_timeout_ms="${ECOCLAW_TASK_STATE_ESTIMATOR_REQUEST_TIMEOUT_MS:-60000}"
+  local task_state_estimator_batch_turns="${ECOCLAW_TASK_STATE_ESTIMATOR_BATCH_TURNS:-5}"
+  local task_state_estimator_eviction_lookahead_turns="${ECOCLAW_TASK_STATE_ESTIMATOR_EVICTION_LOOKAHEAD_TURNS:-3}"
+  local task_state_estimator_input_mode="${ECOCLAW_TASK_STATE_ESTIMATOR_INPUT_MODE:-sliding_window}"
   if [[ ! -f "${config_path}" ]]; then
     echo "WARN: openclaw config not found, skip ecoclaw config patch: ${config_path}" >&2
     return 0
   fi
 
-  python3 - "${config_path}" "${proxy_base_url}" "${proxy_api_key}" "${proxy_port}" "${proxy_pure_forward}" "${reduction_trigger_min_chars}" "${reduction_max_tool_chars}" "${reduction_pass_repeated_read_dedup}" "${reduction_pass_tool_payload_trim}" "${reduction_pass_html_slimming}" "${reduction_pass_exec_output_truncation}" "${reduction_pass_agents_startup_optimization}" "${default_model}" "${exec_host}" "${exec_security}" "${exec_ask}" <<'PATCH_PY'
+  python3 - "${config_path}" "${proxy_base_url}" "${proxy_api_key}" "${proxy_port}" "${plugin_load_path}" "${proxy_pure_forward}" "${reduction_trigger_min_chars}" "${reduction_max_tool_chars}" "${reduction_pass_repeated_read_dedup}" "${reduction_pass_tool_payload_trim}" "${reduction_pass_html_slimming}" "${reduction_pass_exec_output_truncation}" "${reduction_pass_agents_startup_optimization}" "${default_model}" "${exec_host}" "${exec_security}" "${exec_ask}" "${enable_compaction}" "${enable_eviction}" "${eviction_policy}" "${eviction_min_block_chars}" "${eviction_replacement_mode}" "${task_state_estimator_enabled}" "${task_state_estimator_base_url}" "${task_state_estimator_api_key}" "${task_state_estimator_model}" "${task_state_estimator_request_timeout_ms}" "${task_state_estimator_batch_turns}" "${task_state_estimator_eviction_lookahead_turns}" "${task_state_estimator_input_mode}" <<'PATCH_PY'
 import json
 import os
 import sys
@@ -159,6 +172,7 @@ import sys
     proxy_base_url,
     proxy_api_key,
     proxy_port_raw,
+    plugin_load_path,
     proxy_pure_forward_raw,
     trigger_min_chars_raw,
     max_tool_chars_raw,
@@ -171,7 +185,20 @@ import sys
     exec_host,
     exec_security,
     exec_ask,
-) = sys.argv[1:17]
+    enable_compaction_raw,
+    enable_eviction_raw,
+    eviction_policy,
+    eviction_min_block_chars_raw,
+    eviction_replacement_mode,
+    task_state_estimator_enabled_raw,
+    task_state_estimator_base_url,
+    task_state_estimator_api_key,
+    task_state_estimator_model,
+    task_state_estimator_request_timeout_ms_raw,
+    task_state_estimator_batch_turns_raw,
+    task_state_estimator_eviction_lookahead_turns_raw,
+    task_state_estimator_input_mode,
+ ) = sys.argv[1:31]
 
 proxy_port = int(proxy_port_raw)
 proxy_pure_forward = str(proxy_pure_forward_raw).strip().lower() in ("1", "true", "yes", "on")
@@ -183,11 +210,20 @@ pass_tool_payload_trim = parse_bool(pass_tool_payload_trim_raw)
 pass_html_slimming = parse_bool(pass_html_slimming_raw)
 pass_exec_output_truncation = parse_bool(pass_exec_output_truncation_raw)
 pass_agents_startup_optimization = parse_bool(pass_agents_startup_optimization_raw)
+enable_compaction = parse_bool(enable_compaction_raw)
+enable_eviction = parse_bool(enable_eviction_raw)
+eviction_min_block_chars = int(eviction_min_block_chars_raw)
+task_state_estimator_enabled = parse_bool(task_state_estimator_enabled_raw)
+task_state_estimator_request_timeout_ms = int(task_state_estimator_request_timeout_ms_raw)
+task_state_estimator_batch_turns = int(task_state_estimator_batch_turns_raw)
+task_state_estimator_eviction_lookahead_turns = int(task_state_estimator_eviction_lookahead_turns_raw)
 
 with open(config_path, "r", encoding="utf-8") as f:
     cfg = json.load(f)
 
 plugins = cfg.setdefault("plugins", {})
+load_cfg = plugins.setdefault("load", {})
+load_cfg["paths"] = [plugin_load_path]
 entries = plugins.setdefault("entries", {})
 ecoclaw = entries.setdefault("ecoclaw", {})
 ecoclaw["enabled"] = True
@@ -207,8 +243,8 @@ modules = ecoclaw_cfg.setdefault("modules", {})
 modules["stabilizer"] = True
 modules["policy"] = True
 modules["reduction"] = True
-modules["compaction"] = False
-modules["eviction"] = False
+modules["compaction"] = enable_compaction
+modules["eviction"] = enable_eviction
 modules["decisionLedger"] = True
 
 hooks = ecoclaw_cfg.setdefault("hooks", {})
@@ -220,6 +256,15 @@ context_engine["enabled"] = True
 context_engine.setdefault("pruneThresholdChars", 100000)
 context_engine.setdefault("keepRecentToolResults", 5)
 context_engine.setdefault("placeholder", "[pruned]")
+
+compaction = ecoclaw_cfg.setdefault("compaction", {})
+compaction["enabled"] = enable_compaction
+
+eviction = ecoclaw_cfg.setdefault("eviction", {})
+eviction["enabled"] = enable_eviction
+eviction["policy"] = eviction_policy
+eviction["minBlockChars"] = max(16, eviction_min_block_chars)
+eviction["replacementMode"] = "drop" if eviction_replacement_mode == "drop" else "pointer_stub"
 
 reduction = ecoclaw_cfg.setdefault("reduction", {})
 reduction["engine"] = "layered"
@@ -271,6 +316,22 @@ exec_cfg = tools.setdefault("exec", {})
 exec_cfg["host"] = exec_host
 exec_cfg["security"] = exec_security
 exec_cfg["ask"] = exec_ask
+task_state_estimator = ecoclaw_cfg.setdefault("taskStateEstimator", {})
+task_state_estimator["enabled"] = task_state_estimator_enabled
+if task_state_estimator_base_url.strip():
+    task_state_estimator["baseUrl"] = task_state_estimator_base_url.strip()
+if task_state_estimator_api_key.strip():
+    task_state_estimator["apiKey"] = task_state_estimator_api_key.strip()
+if task_state_estimator_model.strip():
+    task_state_estimator["model"] = task_state_estimator_model.strip()
+task_state_estimator["requestTimeoutMs"] = max(1000, task_state_estimator_request_timeout_ms)
+task_state_estimator["batchTurns"] = max(1, task_state_estimator_batch_turns)
+task_state_estimator["evictionLookaheadTurns"] = max(1, task_state_estimator_eviction_lookahead_turns)
+task_state_estimator["inputMode"] = (
+    "completed_summary_plus_active_turns"
+    if task_state_estimator_input_mode == "completed_summary_plus_active_turns"
+    else "sliding_window"
+)
 
 with open(config_path, "w", encoding="utf-8") as f:
     json.dump(cfg, f, indent=2, ensure_ascii=False)
@@ -278,6 +339,7 @@ with open(config_path, "w", encoding="utf-8") as f:
 
 print(
     "Ensured ecoclaw plugin config:",
+    f"loadPath={plugin_load_path}",
     f"port={ecoclaw_cfg.get('proxyPort')}",
     f"base={ecoclaw_cfg.get('proxyBaseUrl')}",
     f"pureForward={proxy_mode.get('pureForward')}",
@@ -288,6 +350,10 @@ print(
     f"execHost={exec_cfg.get('host')}",
     f"execSecurity={exec_cfg.get('security')}",
     f"execAsk={exec_cfg.get('ask')}",
+    f"evictionReplacementMode={eviction.get('replacementMode')}",
+    f"taskStateEstimatorEnabled={task_state_estimator.get('enabled')}",
+    f"taskStateEstimatorModel={task_state_estimator.get('model')}",
+    f"taskStateEstimatorInputMode={task_state_estimator.get('inputMode')}",
     f"fallbacks={len(model_defaults.get('fallbacks', []))}",
 )
 PATCH_PY

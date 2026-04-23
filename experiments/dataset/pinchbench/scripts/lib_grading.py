@@ -446,10 +446,23 @@ def _restrict_judge_tools(agent_id: str) -> None:
         else:
             return
 
+        # Disable all ecoclaw modules for judge agents to ensure clean evaluation
+        plugins_cfg = cfg.get("plugins", {})
+        ecoclaw = plugins_cfg.get("entries", {}).get("ecoclaw", {})
+        if ecoclaw:
+            ecoclaw_cfg = ecoclaw.get("config", {})
+            modules = ecoclaw_cfg.get("modules", {})
+            modules["eviction"] = False
+            modules["compaction"] = False
+            modules["reduction"] = False
+            modules["policy"] = False
+            modules["stabilizer"] = False
+            modules["decisionLedger"] = False
+
         OPENCLAW_CONFIG_PATH.write_text(
             json.dumps(cfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
         )
-        logger.info("Restricted tools for judge agent %s", agent_id)
+        logger.info("Restricted tools and disabled ecoclaw modules for judge agent %s", agent_id)
 
 
 def _parse_judge_response(transcript: List[Dict[str, Any]]) -> Dict[str, Any]:
