@@ -30,14 +30,16 @@ Your summary MUST NOT:
 Output ONLY the summary text, no additional framing.`;
 
 export interface SummarizerOptions {
-    /** LLM API base URL. Read from env AGENTSWING_SUMMARY_API_BASE or OpenClaw config. */
+    /** LLM API base URL. */
     apiBase?: string;
-    /** API key. Read from env AGENTSWING_SUMMARY_API_KEY or OpenClaw config. */
+    /** API key resolved by OpenClaw runtime auth helpers. */
     apiKey?: string;
-    /** Model ID for summarization. Uses agent's own model by default. */
+    /** Model ID for summarization. */
     model?: string;
     /** Max tokens for the summary response. */
     maxTokens?: number;
+    /** Original user prompt kept outside the summary, when available. */
+    originalPrompt?: string;
 }
 
 /**
@@ -47,24 +49,14 @@ export async function generateSummary(
     messagesToSummarize: Msg[],
     options: SummarizerOptions = {},
 ): Promise<string> {
-    const apiBase =
-        options.apiBase ??
-        process.env.AGENTSWING_SUMMARY_API_BASE ??
-        process.env.OPENCLAW_API_BASE ??
-        "";
-    const apiKey =
-        options.apiKey ??
-        process.env.AGENTSWING_SUMMARY_API_KEY ??
-        process.env.OPENCLAW_API_KEY ??
-        "";
-    const model =
-        options.model ?? process.env.AGENTSWING_SUMMARY_MODEL ?? "gpt-5-mini";
+    const apiBase = options.apiBase ?? "";
+    const apiKey = options.apiKey ?? "";
+    const model = options.model ?? "gpt-5-mini";
     const maxTokens = options.maxTokens ?? 4096;
 
     if (!apiBase) {
         throw new Error(
-            "AgentSwing summarizer: no API base URL configured. " +
-            "Set AGENTSWING_SUMMARY_API_BASE or provide apiBase in options.",
+            "AgentSwing summarizer: no API base URL configured.",
         );
     }
 
@@ -77,7 +69,14 @@ export async function generateSummary(
             { role: "system", content: SUMMARY_SYSTEM_PROMPT },
             {
                 role: "user",
-                content: `Please summarize the following interaction history:\n\n${historyText}`,
+                content: [
+                    options.originalPrompt
+                        ? `The original user prompt below will remain in context separately. Do not restate it verbatim.\n\n[Original User Prompt]\n${options.originalPrompt}`
+                        : "",
+                    `Please summarize the following interaction history:\n\n${historyText}`,
+                ]
+                    .filter((part) => part.length > 0)
+                    .join("\n\n"),
             },
         ],
         max_tokens: maxTokens,

@@ -42,6 +42,15 @@ export interface AgentSwingConfig {
 
     /** Override model context window in tokens. Default: inferred from tokenBudget. */
     contextWindow: number | null;
+
+    /** Provider id used for summary generation auth/baseUrl resolution. */
+    summaryProvider: string | null;
+
+    /** Explicit summary model id. Defaults to the active model id when available. */
+    summaryModel: string | null;
+
+    /** Optional explicit OpenAI-compatible base URL for summary generation. */
+    summaryApiBase: string | null;
 }
 
 /** Default configuration values. */
@@ -52,6 +61,9 @@ export const DEFAULT_CONFIG: AgentSwingConfig = {
     triggerTurnCount: 10,
     keepLastN: 5,
     contextWindow: null,
+    summaryProvider: null,
+    summaryModel: null,
+    summaryApiBase: null,
 };
 
 /**
@@ -80,5 +92,17 @@ export function resolveConfig(raw: Record<string, unknown>): AgentSwingConfig {
                 : DEFAULT_CONFIG.keepLastN,
         contextWindow:
             typeof raw.contextWindow === "number" ? raw.contextWindow : null,
+        summaryProvider:
+            typeof raw.summaryProvider === "string" && raw.summaryProvider.trim().length > 0
+                ? raw.summaryProvider.trim()
+                : DEFAULT_CONFIG.summaryProvider,
+        summaryModel:
+            typeof raw.summaryModel === "string" && raw.summaryModel.trim().length > 0
+                ? raw.summaryModel.trim()
+                : DEFAULT_CONFIG.summaryModel,
+        summaryApiBase:
+            typeof raw.summaryApiBase === "string" && raw.summaryApiBase.trim().length > 0
+                ? raw.summaryApiBase.trim()
+                : DEFAULT_CONFIG.summaryApiBase,
     };
 }

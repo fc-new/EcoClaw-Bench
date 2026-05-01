@@ -20,8 +20,8 @@ import { AgentSwingEngine } from "./src/engine.js";
  *   AGENTSWING_TRIGGER_TURN_COUNT — integer (default: 10)
  *   AGENTSWING_KEEP_LAST_N       — integer (default: 5)
  *   AGENTSWING_CONTEXT_WINDOW    — integer (optional)
- *   AGENTSWING_SUMMARY_API_BASE  — LLM API base URL (for summary mode)
- *   AGENTSWING_SUMMARY_API_KEY   — LLM API key (for summary mode)
+ *   AGENTSWING_SUMMARY_PROVIDER  — provider id used for summary auth/baseUrl resolution
+ *   AGENTSWING_SUMMARY_API_BASE  — optional explicit LLM API base URL (for summary mode)
  *   AGENTSWING_SUMMARY_MODEL     — model ID for summarization
  */
 function readConfigFromEnv() {
@@ -44,6 +44,15 @@ function readConfigFromEnv() {
     if (process.env.AGENTSWING_CONTEXT_WINDOW) {
         config.contextWindow = parseInt(process.env.AGENTSWING_CONTEXT_WINDOW, 10);
     }
+    if (process.env.AGENTSWING_SUMMARY_PROVIDER) {
+        config.summaryProvider = process.env.AGENTSWING_SUMMARY_PROVIDER;
+    }
+    if (process.env.AGENTSWING_SUMMARY_API_BASE) {
+        config.summaryApiBase = process.env.AGENTSWING_SUMMARY_API_BASE;
+    }
+    if (process.env.AGENTSWING_SUMMARY_MODEL) {
+        config.summaryModel = process.env.AGENTSWING_SUMMARY_MODEL;
+    }
     return config;
 }
 const plugin = {
@@ -56,7 +65,10 @@ const plugin = {
         const envConfig = readConfigFromEnv();
         const pluginCfg = { ...(api.pluginConfig ?? {}), ...envConfig };
         api.registerContextEngine("agentswing-context-engine", () => {
-            return new AgentSwingEngine(pluginCfg);
+            return new AgentSwingEngine(pluginCfg, {
+                runtime: api.runtime,
+                openclawConfig: api.config,
+            });
         });
     },
 };

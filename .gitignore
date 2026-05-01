@@ -11,6 +11,14 @@ __pycache__/
 build/
 develop-eggs/
 dist/
+node_modules/
+!experiments/plugins/agentswing-context-engine/dist/
+!experiments/plugins/agentswing-context-engine/dist/src/
+!experiments/plugins/agentswing-context-engine/dist/src/artifact-dir.d.ts
+!experiments/plugins/agentswing-context-engine/dist/src/artifact-dir.js
+!experiments/plugins/agentswing-context-engine/dist/src/canonical-session-state.d.ts
+!experiments/plugins/agentswing-context-engine/dist/src/canonical-session-state.js
+experiments/plugins/agentswing-context-engine/dist/src/*.test.*
 downloads/
 eggs/
 .eggs/
@@ -183,4 +191,6 @@ __marimo__/
 .abstra/
 
 # Local working notes
+/.codex
+/.vscode/
 /scripts/

@@ -34,6 +34,12 @@ export interface AgentSwingConfig {
     keepLastN: number;
     /** Override model context window in tokens. Default: inferred from tokenBudget. */
     contextWindow: number | null;
+    /** Provider id used for summary generation auth/baseUrl resolution. */
+    summaryProvider: string | null;
+    /** Explicit summary model id. Defaults to the active model id when available. */
+    summaryModel: string | null;
+    /** Optional explicit OpenAI-compatible base URL for summary generation. */
+    summaryApiBase: string | null;
 }
 /** Default configuration values. */
 export declare const DEFAULT_CONFIG: AgentSwingConfig;

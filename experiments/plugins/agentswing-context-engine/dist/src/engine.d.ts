@@ -2,14 +2,35 @@
  * AgentSwingEngine — Core context engine implementing Keep-Last-N and Summary strategies.
  *
  * Lifecycle:
- *   ingest()   — no-op (session manager handles persistence)
- *   assemble() — check token usage ratio → apply strategy if over threshold
- *   compact()  — called on overflow or /compact → apply strategy forcefully
- *   afterTurn()— (summary mode) pre-generate summary for next assemble
+ *   ingest()    — no-op; canonical state is synchronized from full transcripts
+ *   bootstrap() — import an existing session transcript into plugin-owned state
+ *   assemble()  — synchronize canonical state, then apply AgentSwing strategy
+ *   compact()   — read sessionFile, synchronize, and force a managed context view
+ *   afterTurn() — persist canonical state and pre-generate summary when useful
  *
  * ownsCompaction: true — we fully replace OpenClaw's built-in auto-compaction.
  */
 import type { Msg } from "./turn-parser.js";
+type AssembleResponse = {
+    messages: Msg[];
+    estimatedTokens: number;
+    systemPromptAddition?: string;
+};
+type RuntimeResolvedProviderAuth = {
+    apiKey?: string;
+};
+type EngineRuntime = {
+    modelAuth?: {
+        resolveApiKeyForProvider?: (params: {
+            provider: string;
+            cfg?: Record<string, unknown>;
+        }) => Promise<RuntimeResolvedProviderAuth>;
+    };
+};
+type AgentSwingEngineRuntimeOptions = {
+    runtime?: EngineRuntime;
+    openclawConfig?: Record<string, unknown>;
+};
 export declare class AgentSwingEngine {
     readonly info: {
         id: string;
@@ -18,10 +39,21 @@ export declare class AgentSwingEngine {
         ownsCompaction: boolean;
     };
     private config;
+    private runtime?;
+    private openclawConfig?;
     private sessions;
-    constructor(pluginConfig?: Record<string, unknown>);
-    private getSession;
+    constructor(pluginConfig?: Record<string, unknown>, runtimeOptions?: AgentSwingEngineRuntimeOptions);
     private getContextWindow;
+    private resolveSummaryRequestOptions;
+    bootstrap(params: {
+        sessionId: string;
+        sessionKey?: string;
+        sessionFile: string;
+    }): Promise<{
+        bootstrapped: boolean;
+        importedMessages?: number;
+        reason?: string;
+    }>;
     ingest(_params: {
         sessionId: string;
         sessionKey?: string;
@@ -39,11 +71,7 @@ export declare class AgentSwingEngine {
         citationsMode?: string;
         model?: string;
         prompt?: string;
-    }): Promise<{
-        messages: Msg[];
-        estimatedTokens: number;
-        systemPromptAddition?: string;
-    }>;
+    }): Promise<AssembleResponse>;
     compact(params: {
         sessionId: string;
         sessionKey?: string;
@@ -80,4 +108,10 @@ export declare class AgentSwingEngine {
     private applyStrategy;
     private applyKeepLastN;
     private applySummary;
+    private withManagedContext;
+    private ensureSummaryState;
+    private synchronizeCanonicalState;
+    private loadCanonicalState;
+    private persistCanonicalState;
 }
+export {};
