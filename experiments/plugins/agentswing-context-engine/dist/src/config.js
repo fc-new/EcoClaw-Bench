@@ -13,6 +13,9 @@ export const DEFAULT_CONFIG = {
     triggerTurnCount: 10,
     keepLastN: 5,
     contextWindow: null,
+    summaryProvider: null,
+    summaryModel: null,
+    summaryApiBase: null,
 };
 /**
  * OpenClaw DEFAULT_CONTEXT_TOKENS fallback (from src/agents/defaults.ts).
@@ -34,5 +37,14 @@ export function resolveConfig(raw) {
             ? Math.max(1, Math.floor(raw.keepLastN))
             : DEFAULT_CONFIG.keepLastN,
         contextWindow: typeof raw.contextWindow === "number" ? raw.contextWindow : null,
+        summaryProvider: typeof raw.summaryProvider === "string" && raw.summaryProvider.trim().length > 0
+            ? raw.summaryProvider.trim()
+            : DEFAULT_CONFIG.summaryProvider,
+        summaryModel: typeof raw.summaryModel === "string" && raw.summaryModel.trim().length > 0
+            ? raw.summaryModel.trim()
+            : DEFAULT_CONFIG.summaryModel,
+        summaryApiBase: typeof raw.summaryApiBase === "string" && raw.summaryApiBase.trim().length > 0
+            ? raw.summaryApiBase.trim()
+            : DEFAULT_CONFIG.summaryApiBase,
     };
 }

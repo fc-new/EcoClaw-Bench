@@ -15,6 +15,7 @@ SUITE=""
 RUNS=""
 TIMEOUT_MULTIPLIER=""
 PARALLEL=""
+SESSION_MODE=""
 CONTEXT_MODE=""
 TRIGGER_MODE=""
 TRIGGER_RATIO=""
@@ -30,6 +31,7 @@ while [[ $# -gt 0 ]]; do
     --runs) RUNS="${2:-}"; shift 2 ;;
     --timeout-multiplier) TIMEOUT_MULTIPLIER="${2:-}"; shift 2 ;;
     --parallel) PARALLEL="${2:-}"; shift 2 ;;
+    --session-mode) SESSION_MODE="${2:-}"; shift 2 ;;
     --context-mode) CONTEXT_MODE="${2:-}"; shift 2 ;;
     --trigger-mode) TRIGGER_MODE="${2:-}"; shift 2 ;;
     --trigger-ratio) TRIGGER_RATIO="${2:-}"; shift 2 ;;
@@ -64,6 +66,7 @@ RESOLVED_SUITE="${SUITE:-${ECOCLAW_SUITE:-all}}"
 RESOLVED_RUNS="${RUNS:-${ECOCLAW_RUNS:-1}}"
 RESOLVED_TIMEOUT="${TIMEOUT_MULTIPLIER:-${ECOCLAW_TIMEOUT_MULTIPLIER:-1.0}}"
 RESOLVED_PARALLEL="${PARALLEL:-${ECOCLAW_PARALLEL:-1}}"
+RESOLVED_SESSION_MODE="${SESSION_MODE:-${ECOCLAW_SESSION_MODE:-isolated}}"
 
 # Context engine parameters
 RESOLVED_CONTEXT_MODE="${CONTEXT_MODE:-${AGENTSWING_MODE:-keep-last-n}}"
@@ -82,6 +85,11 @@ fi
 # Validate trigger mode
 if [[ "${RESOLVED_TRIGGER_MODE}" != "token-ratio" ]] && [[ "${RESOLVED_TRIGGER_MODE}" != "turn-count" ]]; then
   echo "ERROR: --trigger-mode must be 'token-ratio' or 'turn-count', got: ${RESOLVED_TRIGGER_MODE}" >&2
+  exit 1
+fi
+
+if [[ "${RESOLVED_SESSION_MODE}" != "isolated" ]] && [[ "${RESOLVED_SESSION_MODE}" != "continuous" ]]; then
+  echo "ERROR: --session-mode must be 'isolated' or 'continuous', got: ${RESOLVED_SESSION_MODE}" >&2
   exit 1
 fi
 
@@ -116,8 +124,8 @@ fi
 
 # For summary mode: pass API credentials for LLM summarization calls
 if [[ "${RESOLVED_CONTEXT_MODE}" == "summary" ]]; then
+  export AGENTSWING_SUMMARY_PROVIDER="${AGENTSWING_SUMMARY_PROVIDER:-${RESOLVED_MODEL%%/*}}"
   export AGENTSWING_SUMMARY_API_BASE="${AGENTSWING_SUMMARY_API_BASE:-${ECOCLAW_API_BASE:-}}"
-  export AGENTSWING_SUMMARY_API_KEY="${AGENTSWING_SUMMARY_API_KEY:-${ECOCLAW_API_KEY:-}}"
   export AGENTSWING_SUMMARY_MODEL="${AGENTSWING_SUMMARY_MODEL:-${RESOLVED_MODEL#*/}}"
 fi
 
@@ -153,6 +161,7 @@ echo "  Trigger Mode:  ${RESOLVED_TRIGGER_MODE}"
 echo "  Trigger Ratio: ${RESOLVED_TRIGGER_RATIO}"
 echo "  Trigger Turns: ${RESOLVED_TRIGGER_TURN_COUNT}"
 echo "  Keep Last N:   ${RESOLVED_KEEP_LAST_N}"
+echo "  Session Mode:  ${RESOLVED_SESSION_MODE}"
 echo "  Model:         ${RESOLVED_MODEL}"
 echo "  Judge:         ${RESOLVED_JUDGE}"
 echo "  Suite:         ${RESOLVED_SUITE}"
@@ -166,6 +175,7 @@ BENCH_ARGS=(
   --suite "${RESOLVED_SUITE}"
   --runs "${RESOLVED_RUNS}"
   --parallel "${RESOLVED_PARALLEL}"
+  --session-mode "${RESOLVED_SESSION_MODE}"
   --timeout-multiplier "${RESOLVED_TIMEOUT}"
   --output-dir "${OUTPUT_DIR}"
   --no-upload

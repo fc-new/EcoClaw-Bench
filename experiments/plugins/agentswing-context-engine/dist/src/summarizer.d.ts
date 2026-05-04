@@ -9,14 +9,16 @@
  */
 import type { Msg } from "./turn-parser.js";
 export interface SummarizerOptions {
-    /** LLM API base URL. Read from env AGENTSWING_SUMMARY_API_BASE or OpenClaw config. */
+    /** LLM API base URL. */
     apiBase?: string;
-    /** API key. Read from env AGENTSWING_SUMMARY_API_KEY or OpenClaw config. */
+    /** API key resolved by OpenClaw runtime auth helpers. */
     apiKey?: string;
-    /** Model ID for summarization. Uses agent's own model by default. */
+    /** Model ID for summarization. */
     model?: string;
     /** Max tokens for the summary response. */
     maxTokens?: number;
+    /** Original user prompt kept outside the summary, when available. */
+    originalPrompt?: string;
 }
 /**
  * Call an OpenAI-compatible chat completion API to generate a summary.

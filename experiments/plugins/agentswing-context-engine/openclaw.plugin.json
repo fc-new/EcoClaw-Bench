@@ -43,6 +43,18 @@
                 "type": "integer",
                 "minimum": 1000,
                 "description": "Override model context window size in tokens (default: inferred from tokenBudget)"
+            },
+            "summaryProvider": {
+                "type": "string",
+                "description": "Provider id used to resolve summary auth and baseUrl (default: infer from active model, else openai)"
+            },
+            "summaryModel": {
+                "type": "string",
+                "description": "Model id used for summary generation (default: infer from active model, else gpt-5-mini)"
+            },
+            "summaryApiBase": {
+                "type": "string",
+                "description": "Optional explicit OpenAI-compatible base URL for summary generation"
             }
         },
         "required": []

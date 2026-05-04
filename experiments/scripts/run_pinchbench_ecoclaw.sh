@@ -11,6 +11,7 @@ SUITE=""
 RUNS=""
 TIMEOUT_MULTIPLIER=""
 PARALLEL=""
+SESSION_MODE=""
 ENABLE_MULTI_AGENT=0
 MULTI_AGENT_ROLES=""
 AGENT_CONFIG=""
@@ -23,6 +24,7 @@ while [[ $# -gt 0 ]]; do
     --runs) RUNS="${2:-}"; shift 2 ;;
     --timeout-multiplier) TIMEOUT_MULTIPLIER="${2:-}"; shift 2 ;;
     --parallel) PARALLEL="${2:-}"; shift 2 ;;
+    --session-mode) SESSION_MODE="${2:-}"; shift 2 ;;
     --enable-multi-agent) ENABLE_MULTI_AGENT=1; shift ;;
     --multi-agent-roles) MULTI_AGENT_ROLES="${2:-}"; shift 2 ;;
     --agent-config) AGENT_CONFIG="${2:-}"; shift 2 ;;
@@ -38,7 +40,11 @@ apply_ecoclaw_env
 export ECOCLAW_FORCE_GATEWAY_RESTART="${ECOCLAW_FORCE_GATEWAY_RESTART:-true}"
 recover_stale_openclaw_config_backup
 ensure_ecoclaw_plugin_config
+sanitize_ecoclaw_plugin_config
+validate_openclaw_runtime_config
 ensure_openclaw_gateway_running
+sanitize_ecoclaw_plugin_config
+validate_openclaw_runtime_config
 
 if [[ -z "${ECOCLAW_SKILL_DIR:-}" && -d "${REPO_ROOT}/pinchbench-skill" ]]; then
   export ECOCLAW_SKILL_DIR="${REPO_ROOT}/pinchbench-skill"
@@ -55,6 +61,7 @@ RESOLVED_SUITE="${SUITE:-${ECOCLAW_SUITE:-automated-only}}"
 RESOLVED_RUNS="${RUNS:-${ECOCLAW_RUNS:-3}}"
 RESOLVED_TIMEOUT="${TIMEOUT_MULTIPLIER:-${ECOCLAW_TIMEOUT_MULTIPLIER:-1.0}}"
 RESOLVED_PARALLEL="${PARALLEL:-${ECOCLAW_PARALLEL:-1}}"
+RESOLVED_SESSION_MODE="${SESSION_MODE:-${ECOCLAW_SESSION_MODE:-isolated}}"
 
 # Multi-agent: resolve from CLI flag or env var
 if [[ "${ENABLE_MULTI_AGENT}" == "0" ]] && [[ "${ECOCLAW_ENABLE_MULTI_AGENT:-false}" =~ ^(true|1|yes)$ ]]; then
@@ -76,14 +83,88 @@ fi
 if [[ "${ENABLE_MULTI_AGENT}" == "1" ]]; then
   OUTPUT_DIR="${REPO_ROOT}/results/raw/pinchbench/multi_agent"
 else
-  OUTPUT_DIR="${REPO_ROOT}/results/raw/pinchbench/ecoclaw"
+OUTPUT_DIR="${REPO_ROOT}/results/raw/pinchbench/ecoclaw"
 fi
 LOG_DIR="${REPO_ROOT}/log"
 RUN_TAG="$(date +%Y%m%d_%H%M%S)"
-RUN_LOG_FILE="${LOG_DIR}/pinchbench_ecoclaw_${RUN_TAG}.log"
-BENCHMARK_LOG_FILE="${LOG_DIR}/pinchbench_ecoclaw_${RUN_TAG}_benchmark.log"
+RUN_LOG_PREFIX="${LOG_DIR}/pinchbench_ecoclaw_${RUN_TAG}"
+RUN_LOG_FILE="${RUN_LOG_PREFIX}_generate.log"
+EVAL_LOG_FILE="${RUN_LOG_PREFIX}_eval.log"
+EVAL_JSONL_FILE="${RUN_LOG_PREFIX}_eval.jsonl"
 RUN_START_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 mkdir -p "${OUTPUT_DIR}" "${LOG_DIR}"
+export PINCHBENCH_EVAL_LOG_FILE="${EVAL_LOG_FILE}"
+export PINCHBENCH_EVAL_JSONL_FILE="${EVAL_JSONL_FILE}"
+
+PLUGIN_TRACE_FILE="${HOME}/.openclaw/ecoclaw-plugin-state/task-state/trace.jsonl"
+GATEWAY_LOG_FILE="/tmp/openclaw_gateway.log"
+TRACE_TAIL_PID=""
+GATEWAY_TAIL_PID=""
+
+cleanup_live_debug_tails() {
+  if [[ -n "${TRACE_TAIL_PID}" ]]; then
+    kill "${TRACE_TAIL_PID}" >/dev/null 2>&1 || true
+    wait "${TRACE_TAIL_PID}" >/dev/null 2>&1 || true
+    TRACE_TAIL_PID=""
+  fi
+  if [[ -n "${GATEWAY_TAIL_PID}" ]]; then
+    kill "${GATEWAY_TAIL_PID}" >/dev/null 2>&1 || true
+    wait "${GATEWAY_TAIL_PID}" >/dev/null 2>&1 || true
+    GATEWAY_TAIL_PID=""
+  fi
+}
+
+run_ecoclaw_exit_cleanup() {
+  cleanup_live_debug_tails
+  if [[ "${ENABLE_MULTI_AGENT}" == "1" ]]; then
+    restore_openclaw_config || true
+  fi
+}
+
+start_live_debug_tails() {
+  mkdir -p "$(dirname "${PLUGIN_TRACE_FILE}")"
+  : > "${PLUGIN_TRACE_FILE}"
+  (
+    stdbuf -oL tail -n 0 -F "${PLUGIN_TRACE_FILE}" 2>/dev/null \
+      | python3 -u -c '
+import json, sys
+interesting = {
+    "task_state_estimator_applied",
+    "registry_driven_eviction_evaluated",
+    "canonical_eviction_closure_checked",
+    "canonical_eviction_applied",
+    "canonical_state_sync",
+    "canonical_state_rewrite",
+}
+for raw in sys.stdin:
+    line = raw.strip()
+    if not line:
+        continue
+    try:
+        obj = json.loads(line)
+    except Exception:
+        continue
+    if obj.get("stage") not in interesting:
+        continue
+    print("[plugin-trace] " + json.dumps(obj, ensure_ascii=False), flush=True)
+' || true
+  ) &
+  TRACE_TAIL_PID=$!
+
+  touch "${GATEWAY_LOG_FILE}"
+  (
+    stdbuf -oL tail -n 0 -F "${GATEWAY_LOG_FILE}" 2>/dev/null \
+      | python3 -u -c '
+import sys
+for raw in sys.stdin:
+    line = raw.rstrip("\n")
+    if "ecoclaw" not in line.lower():
+        continue
+    print("[gateway-log] " + line, flush=True)
+' || true
+  ) &
+  GATEWAY_TAIL_PID=$!
+}
 
 # Multi-agent config injection
 if [[ "${ENABLE_MULTI_AGENT}" == "1" ]]; then
@@ -103,7 +184,6 @@ if [[ "${ENABLE_MULTI_AGENT}" == "1" ]]; then
     RESOLVED_SUBAGENT_MAX_CONCURRENT="${ECOCLAW_SUBAGENT_MAX_CONCURRENT:-4}"
     inject_multi_agent_config "${RESOLVED_MODEL}" "${RESOLVED_SUBAGENT_THINKING}" "${RESOLVED_SUBAGENT_MAX_CONCURRENT}"
   fi
-  trap 'restore_openclaw_config || true' EXIT
 fi
 
 # Build benchmark.py arguments
@@ -113,6 +193,7 @@ BENCH_ARGS=(
   --suite "${RESOLVED_SUITE}"
   --runs "${RESOLVED_RUNS}"
   --parallel "${RESOLVED_PARALLEL}"
+  --session-mode "${RESOLVED_SESSION_MODE}"
   --timeout-multiplier "${RESOLVED_TIMEOUT}"
   --output-dir "${OUTPUT_DIR}"
   --no-upload
@@ -128,16 +209,18 @@ fi
 
 SKILL_DIR="$(resolve_skill_dir)"
 cd "${SKILL_DIR}"
+start_live_debug_tails
+trap 'run_ecoclaw_exit_cleanup' EXIT
 uv run scripts/benchmark.py "${BENCH_ARGS[@]}" \
   2>&1 | tee "${RUN_LOG_FILE}"
-
-if [[ -f "${SKILL_DIR}/benchmark.log" ]]; then
-  cp "${SKILL_DIR}/benchmark.log" "${BENCHMARK_LOG_FILE}"
-fi
+cleanup_live_debug_tails
 
 echo "Run log saved to: ${RUN_LOG_FILE}"
-if [[ -f "${BENCHMARK_LOG_FILE}" ]]; then
-  echo "Benchmark log saved to: ${BENCHMARK_LOG_FILE}"
+if [[ -f "${EVAL_LOG_FILE}" ]]; then
+  echo "Eval log saved to: ${EVAL_LOG_FILE}"
+fi
+if [[ -f "${EVAL_JSONL_FILE}" ]]; then
+  echo "Eval jsonl saved to: ${EVAL_JSONL_FILE}"
 fi
 
 RESULT_JSON="$(latest_json_in_dir "${OUTPUT_DIR}" || true)"

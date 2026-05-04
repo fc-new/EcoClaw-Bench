@@ -14,7 +14,7 @@ import time
 import fcntl
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 
 from lib_tasks import Task
 
@@ -29,6 +29,21 @@ OPENCLAW_AGENT_LOCAL = os.environ.get("OPENCLAW_AGENT_LOCAL", "false").strip().l
     "yes",
     "on",
 }
+DEFAULT_BENCH_OPENCLAW_HOME = Path(
+    os.environ.get("ECOCLAW_OPENCLAW_HOME", "/mnt/20t/xubuqiang")
+)
+DEFAULT_BENCH_OPENCLAW_STATE_DIR = DEFAULT_BENCH_OPENCLAW_HOME / ".openclaw"
+if not os.environ.get("OPENCLAW_CONFIG_PATH"):
+    default_config_path = DEFAULT_BENCH_OPENCLAW_STATE_DIR / "openclaw.json"
+    if default_config_path.exists():
+        os.environ["OPENCLAW_CONFIG_PATH"] = str(default_config_path)
+if not os.environ.get("OPENCLAW_STATE_DIR") and DEFAULT_BENCH_OPENCLAW_STATE_DIR.exists():
+    os.environ["OPENCLAW_STATE_DIR"] = str(DEFAULT_BENCH_OPENCLAW_STATE_DIR)
+if not os.environ.get("HOME") or os.environ.get("HOME") == "/home/xubuqiang":
+    if DEFAULT_BENCH_OPENCLAW_HOME.exists():
+        os.environ["HOME"] = str(DEFAULT_BENCH_OPENCLAW_HOME)
+        os.environ.setdefault("XDG_CACHE_HOME", str(DEFAULT_BENCH_OPENCLAW_HOME / ".cache"))
+        os.environ.setdefault("XDG_CONFIG_HOME", str(DEFAULT_BENCH_OPENCLAW_HOME / ".config"))
 if os.environ.get("PINCHBENCH_OPENCLAW_CONFIG_PATH"):
     os.environ["OPENCLAW_CONFIG_PATH"] = os.environ["PINCHBENCH_OPENCLAW_CONFIG_PATH"]
 if os.environ.get("PINCHBENCH_OPENCLAW_STATE_DIR"):
@@ -50,7 +65,16 @@ def _openclaw_agent_lock() -> Any:
 
 
 def slugify_model(model_id: str) -> str:
-    return model_id.replace("/", "-").replace(".", "-").lower()
+    return normalize_benchmark_model_id(model_id).replace("/", "-").replace(".", "-").lower()
+
+
+def normalize_benchmark_model_id(model_id: str) -> str:
+    value = (model_id or "").strip()
+    if not value:
+        return value
+    # kuaipao expects dotted minor version names like gpt-5.4-mini
+    # and rejects dashed variants like gpt-5-4-mini.
+    return value.replace("gpt-5-4-mini", "gpt-5.4-mini")
 
 
 def _ensure_text(value: Any) -> str:
@@ -191,6 +215,7 @@ def ensure_agent_exists(agent_id: str, model_id: str, workspace_dir: Path) -> bo
     Returns True if the agent was (re)created.
     """
     workspace_dir.mkdir(parents=True, exist_ok=True)
+    model_id = normalize_benchmark_model_id(model_id)
 
     with _openclaw_agent_lock():
         try:
@@ -351,7 +376,7 @@ def _get_agent_store_dir(agent_id: str) -> Path:
     return direct_dir
 
 
-def _resolve_session_id_from_store(agent_id: str) -> str | None:
+def _resolve_session_store_entry(agent_id: str) -> Optional[Dict[str, Any]]:
     agent_dir = _get_agent_store_dir(agent_id)
     sessions_store = agent_dir / "sessions" / "sessions.json"
     if not sessions_store.exists():
@@ -374,7 +399,7 @@ def _resolve_session_id_from_store(agent_id: str) -> str | None:
     for key in preferred_keys:
         entry = sessions_payload.get(key)
         if isinstance(entry, dict) and entry.get("sessionId"):
-            return entry["sessionId"]
+            return entry
 
     newest_entry = None
     newest_timestamp = -1
@@ -387,8 +412,15 @@ def _resolve_session_id_from_store(agent_id: str) -> str | None:
         if isinstance(updated_at, (int, float)) and updated_at > newest_timestamp:
             newest_timestamp = updated_at
             newest_entry = entry
-    if newest_entry:
-        return newest_entry.get("sessionId")
+    return newest_entry if isinstance(newest_entry, dict) else None
+
+
+def _resolve_session_id_from_store(agent_id: str) -> str | None:
+    entry = _resolve_session_store_entry(agent_id)
+    if isinstance(entry, dict):
+        session_id = entry.get("sessionId")
+        if isinstance(session_id, str) and session_id:
+            return session_id
     return None
 
 
@@ -407,9 +439,57 @@ def _find_recent_session_path(agent_dir: Path, started_at: float) -> Path | None
     return max(pool, key=lambda path: path.stat().st_mtime)
 
 
-def _load_transcript(agent_id: str, session_id: str, started_at: float) -> List[Dict[str, Any]]:
+def _resolve_session_file_from_store(agent_id: str) -> Path | None:
+    entry = _resolve_session_store_entry(agent_id)
+    if not isinstance(entry, dict):
+        return None
+    session_file = entry.get("sessionFile")
+    if isinstance(session_file, str) and session_file.strip():
+        return Path(session_file)
+    return None
+
+
+def _pending_transcript_lock_paths(agent_dir: Path, session_id: str, agent_id: str) -> List[Path]:
+    sessions_dir = agent_dir / "sessions"
+    candidates: List[Path] = []
+
+    resolved_session_file = _resolve_session_file_from_store(agent_id)
+    if resolved_session_file is not None:
+        candidates.append(Path(f"{resolved_session_file}.lock"))
+
+    resolved_session_id = _resolve_session_id_from_store(agent_id)
+    if resolved_session_id:
+        candidates.append(sessions_dir / f"{resolved_session_id}.jsonl.lock")
+
+    if session_id:
+        candidates.append(sessions_dir / f"{session_id}.jsonl.lock")
+
+    seen: set[str] = set()
+    existing: List[Path] = []
+    for path in candidates:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        if path.exists():
+            existing.append(path)
+
+    if existing:
+        return existing
+
+    return sorted(sessions_dir.glob("*.jsonl.lock")) if sessions_dir.exists() else []
+
+
+def _load_transcript(
+    agent_id: str,
+    session_id: str,
+    started_at: float,
+    *,
+    log_success: bool = True,
+) -> List[Dict[str, Any]]:
     agent_dir = _get_agent_store_dir(agent_id)
     transcript_path = None
+    last_pending_locks: List[Path] = []
 
     # OpenClaw ignores the --session-id we pass and generates its own UUID-based
     # session ID internally.  We need to discover the actual transcript path.
@@ -418,48 +498,92 @@ def _load_transcript(agent_id: str, session_id: str, started_at: float) -> List[
     #   1. Resolve the real session ID from sessions.json
     #   2. Glob for any .jsonl in the sessions dir (most-recently-modified)
     #   3. Try our passed-in session ID as a last resort
-    for attempt in range(6):
-        # 1. Try sessions.json first — OpenClaw writes the real UUID here
+    session_mode = os.environ.get("PINCHBENCH_SESSION_MODE", "").strip().lower()
+    continuous_mode = session_mode == "continuous"
+    max_attempts = int(os.environ.get(
+        "PINCHBENCH_TRANSCRIPT_RETRIES_CONTINUOUS" if continuous_mode else "PINCHBENCH_TRANSCRIPT_RETRIES",
+        "24" if continuous_mode else "6",
+    ))
+    retry_sleep_s = float(os.environ.get(
+        "PINCHBENCH_TRANSCRIPT_RETRY_SLEEP_CONTINUOUS" if continuous_mode else "PINCHBENCH_TRANSCRIPT_RETRY_SLEEP",
+        "5.0" if continuous_mode else "1.0",
+    ))
+
+    for attempt in range(max_attempts):
+        # 1. Prefer the concrete transcript path from sessions.json when available.
+        resolved_session_file = _resolve_session_file_from_store(agent_id)
+        if resolved_session_file and resolved_session_file.exists():
+            transcript_path = resolved_session_file
+            if log_success:
+                logger.info(
+                    "Found transcript via sessionFile: %s (attempt %s)",
+                    resolved_session_file.name,
+                    attempt + 1,
+                )
+            break
+
+        # 2. Try sessions.json sessionId — OpenClaw writes the real UUID / logical id here
         resolved_session_id = _resolve_session_id_from_store(agent_id)
         if resolved_session_id:
             candidate = agent_dir / "sessions" / f"{resolved_session_id}.jsonl"
             if candidate.exists():
                 transcript_path = candidate
-                logger.info(
-                    "Found transcript via sessions.json: %s (attempt %s)",
-                    candidate.name,
-                    attempt + 1,
-                )
+                if log_success:
+                    logger.info(
+                        "Found transcript via sessions.json: %s (attempt %s)",
+                        candidate.name,
+                        attempt + 1,
+                    )
                 break
 
-        # 2. Glob fallback — pick the most recently modified .jsonl
+        # 3. Glob fallback — pick the most recently modified .jsonl
         recent_path = _find_recent_session_path(agent_dir, started_at)
         if recent_path is not None:
             transcript_path = recent_path
-            logger.info(
-                "Found transcript via glob fallback: %s (attempt %s)",
-                recent_path.name,
-                attempt + 1,
-            )
+            if log_success:
+                logger.info(
+                    "Found transcript via glob fallback: %s (attempt %s)",
+                    recent_path.name,
+                    attempt + 1,
+                )
             break
 
-        # 3. Try our passed-in session ID (unlikely to work, but check anyway)
+        # 4. Try our passed-in session ID (unlikely to work, but check anyway)
         direct_path = agent_dir / "sessions" / f"{session_id}.jsonl"
         if direct_path.exists():
             transcript_path = direct_path
-            logger.info(
-                "Found transcript via passed session ID: %s (attempt %s)",
-                direct_path.name,
-                attempt + 1,
-            )
+            if log_success:
+                logger.info(
+                    "Found transcript via passed session ID: %s (attempt %s)",
+                    direct_path.name,
+                    attempt + 1,
+                )
             break
 
-        if attempt < 5:
-            time.sleep(1.0)
+        pending_locks = _pending_transcript_lock_paths(agent_dir, session_id, agent_id)
+        if pending_locks:
+            last_pending_locks = pending_locks
+            if attempt in (0, 2, 5) or attempt == max_attempts - 1:
+                logger.info(
+                    "Transcript not ready yet for agent %s; pending lock files: %s (attempt %s/%s)",
+                    agent_id,
+                    [path.name for path in pending_locks],
+                    attempt + 1,
+                    max_attempts,
+                )
+
+        if attempt < max_attempts - 1:
+            time.sleep(retry_sleep_s)
 
     if transcript_path is None:
         sessions_dir = agent_dir / "sessions"
-        if sessions_dir.exists():
+        if last_pending_locks:
+            logger.warning(
+                "Transcript still not ready for agent %s after waiting; lock files remain: %s",
+                agent_id,
+                [path.name for path in last_pending_locks],
+            )
+        elif sessions_dir.exists():
             all_files = list(sessions_dir.iterdir())
             logger.warning(
                 "Transcript not found for agent %s. Sessions dir contents: %s",
@@ -704,6 +828,8 @@ def execute_openclaw_task(
     enable_multi_agent: bool = False,
     multi_agent_ids: Dict[str, str] | None = None,
     cleanup_sessions: bool = True,
+    defer_transcript_load: bool = False,
+    initial_session_id: str | None = None,
 ) -> Dict[str, Any]:
     logger.info("🤖 Agent [%s] starting task: %s", agent_id, task.task_id)
     logger.info("   Task: %s", task.name)
@@ -733,7 +859,7 @@ def execute_openclaw_task(
         agent_id=agent_id,
         workspace_override=agent_workspace,
     )
-    session_id = f"{task.task_id}_{int(time.time() * 1000)}"
+    session_id = initial_session_id or f"{task.task_id}_{int(time.time() * 1000)}"
     timeout_seconds = task.timeout_seconds * timeout_multiplier
     if enable_multi_agent:
         timeout_seconds *= MULTI_AGENT_TIMEOUT_MULTIPLIER
@@ -796,8 +922,11 @@ def execute_openclaw_task(
                 multi_agent_ids,
                 timeout_seconds,
             )
-        if index == 0 or session_spec.get("new_session"):
+        if index == 0 and not initial_session_id:
             current_session_id = f"{task.task_id}_s{index + 1}_{int(time.time() * 1000)}"
+        elif session_spec.get("new_session"):
+            current_session_id = f"{task.task_id}_s{index + 1}_{int(time.time() * 1000)}"
+        if current_session_id not in executed_session_ids:
             executed_session_ids.append(current_session_id)
         run_stdout, run_stderr, run_exit_code, run_timed_out = _run_once(
             current_session_id,
@@ -817,6 +946,9 @@ def execute_openclaw_task(
         transcript, all_transcripts = _collect_all_session_transcripts(
             multi_agent_ids, start_time,
         )
+    elif defer_transcript_load:
+        transcript = []
+        all_transcripts = None
     else:
         transcript = _load_transcripts_for_session_ids(agent_id, executed_session_ids, start_time)
         all_transcripts = None
@@ -826,6 +958,7 @@ def execute_openclaw_task(
     # (Skip retries in multi-agent mode — coordinator handles its own flow.)
     if (
         not enable_multi_agent
+        and not defer_transcript_load
         and not transcript
         and not timed_out
         and exit_code in (0, -1)
@@ -851,6 +984,7 @@ def execute_openclaw_task(
     should_retry_error, retry_reason = _is_transient_provider_error(transcript)
     if (
         not enable_multi_agent
+        and not defer_transcript_load
         and should_retry_error
         and not timed_out
         and exit_code in (0, -1)
@@ -930,6 +1064,8 @@ def execute_openclaw_task(
     return {
         "agent_id": agent_id,
         "task_id": task.task_id,
+        "final_session_id": current_session_id,
+        "executed_session_ids": executed_session_ids,
         "status": status,
         "transcript": transcript,
         "llm_calls": llm_calls,

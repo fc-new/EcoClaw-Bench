@@ -11,6 +11,7 @@ SUITE=""
 RUNS=""
 TIMEOUT_MULTIPLIER=""
 PARALLEL=""
+SESSION_MODE=""
 ENABLE_MULTI_AGENT=0
 MULTI_AGENT_ROLES=""
 AGENT_CONFIG=""
@@ -23,6 +24,7 @@ while [[ $# -gt 0 ]]; do
     --runs) RUNS="${2:-}"; shift 2 ;;
     --timeout-multiplier) TIMEOUT_MULTIPLIER="${2:-}"; shift 2 ;;
     --parallel) PARALLEL="${2:-}"; shift 2 ;;
+    --session-mode) SESSION_MODE="${2:-}"; shift 2 ;;
     --enable-multi-agent) ENABLE_MULTI_AGENT=1; shift ;;
     --multi-agent-roles) MULTI_AGENT_ROLES="${2:-}"; shift 2 ;;
     --agent-config) AGENT_CONFIG="${2:-}"; shift 2 ;;
@@ -35,8 +37,30 @@ done
 
 import_dotenv
 apply_ecoclaw_env
-ensure_openclaw_gateway_running
 recover_stale_openclaw_config_backup
+
+configure_baseline_runtime() {
+  local config_path="${OPENCLAW_CONFIG_PATH:-${HOME}/.openclaw/openclaw.json}"
+  if [[ ! -f "${config_path}" ]]; then
+    echo "WARN: openclaw config not found, skip baseline runtime patch: ${config_path}" >&2
+    return 0
+  fi
+  python3 - "${config_path}" <<'BASELINE_PY'
+import json
+import sys
+from pathlib import Path
+
+config_path = Path(sys.argv[1])
+obj = json.loads(config_path.read_text(encoding="utf-8"))
+plugins = obj.setdefault("plugins", {})
+entries = plugins.setdefault("entries", {})
+slots = plugins.setdefault("slots", {})
+eco = entries.setdefault("ecoclaw", {})
+eco["enabled"] = False
+slots["contextEngine"] = "legacy"
+config_path.write_text(json.dumps(obj, indent=2) + "\n", encoding="utf-8")
+BASELINE_PY
+}
 
 if [[ -z "${ECOCLAW_SKILL_DIR:-}" && -d "${REPO_ROOT}/pinchbench-skill" ]]; then
   export ECOCLAW_SKILL_DIR="${REPO_ROOT}/pinchbench-skill"
@@ -45,29 +69,20 @@ if [[ -z "${ECOCLAW_SKILL_DIR:-}" && -d "${REPO_ROOT}/experiments/dataset/pinchb
   export ECOCLAW_SKILL_DIR="${REPO_ROOT}/experiments/dataset/pinchbench"
 fi
 
-ECOCLAW_WAS_ENABLED=0
-if openclaw plugins list 2>/dev/null | grep -qE '│ EcoClaw[[:space:]]+│ ecoclaw[[:space:]]+│ loaded[[:space:]]+│'; then
-  ECOCLAW_WAS_ENABLED=1
-fi
+backup_openclaw_config
+configure_baseline_runtime
+validate_openclaw_runtime_config
+ECOCLAW_FORCE_GATEWAY_RESTART=true ensure_openclaw_gateway_running
 
-restore_ecoclaw_plugin() {
-  if [[ "${ECOCLAW_WAS_ENABLED}" == "1" ]]; then
-    openclaw plugins enable ecoclaw >/dev/null 2>&1 || true
-  fi
-}
-
-trap restore_ecoclaw_plugin EXIT
-
-openclaw plugins disable ecoclaw >/dev/null 2>&1 || true
-
-MODEL_LIKE="${MODEL:-${ECOCLAW_MODEL:-tuzi/gpt-5.4}}"
-JUDGE_LIKE="${JUDGE:-${ECOCLAW_JUDGE:-tuzi/gpt-5.4}}"
+MODEL_LIKE="${MODEL:-${BASELINE_MODEL:-gpt-5.4-mini}}"
+JUDGE_LIKE="${JUDGE:-${BASELINE_JUDGE:-gpt-5.4-mini}}"
 RESOLVED_MODEL="$(resolve_model_alias "${MODEL_LIKE}")"
 RESOLVED_JUDGE="$(resolve_model_alias "${JUDGE_LIKE}")"
 RESOLVED_SUITE="${SUITE:-${ECOCLAW_SUITE:-automated-only}}"
 RESOLVED_RUNS="${RUNS:-${ECOCLAW_RUNS:-3}}"
 RESOLVED_TIMEOUT="${TIMEOUT_MULTIPLIER:-${ECOCLAW_TIMEOUT_MULTIPLIER:-1.0}}"
 RESOLVED_PARALLEL="${PARALLEL:-${ECOCLAW_PARALLEL:-1}}"
+RESOLVED_SESSION_MODE="${SESSION_MODE:-${ECOCLAW_SESSION_MODE:-isolated}}"
 
 # Multi-agent: resolve from CLI flag or env var
 if [[ "${ENABLE_MULTI_AGENT}" == "0" ]] && [[ "${ECOCLAW_ENABLE_MULTI_AGENT:-false}" =~ ^(true|1|yes)$ ]]; then
@@ -111,16 +126,16 @@ if [[ "${ENABLE_MULTI_AGENT}" == "1" ]]; then
   fi
 fi
 
-# Ensure config is restored on exit (multi-agent) while also restoring ecoclaw plugin
-restore_ecoclaw_plugin() {
+# Ensure config is restored on exit
+restore_baseline_runtime() {
   if [[ "${ENABLE_MULTI_AGENT}" == "1" ]]; then
     restore_openclaw_config || true
+  else
+    restore_openclaw_config || true
   fi
-  if [[ "${ECOCLAW_WAS_ENABLED}" == "1" ]]; then
-    openclaw plugins enable ecoclaw >/dev/null 2>&1 || true
-  fi
+  ECOCLAW_FORCE_GATEWAY_RESTART=true ensure_openclaw_gateway_running >/dev/null 2>&1 || true
 }
-trap restore_ecoclaw_plugin EXIT
+trap restore_baseline_runtime EXIT
 
 # Build benchmark.py arguments
 BENCH_ARGS=(
@@ -129,6 +144,7 @@ BENCH_ARGS=(
   --suite "${RESOLVED_SUITE}"
   --runs "${RESOLVED_RUNS}"
   --parallel "${RESOLVED_PARALLEL}"
+  --session-mode "${RESOLVED_SESSION_MODE}"
   --timeout-multiplier "${RESOLVED_TIMEOUT}"
   --output-dir "${OUTPUT_DIR}"
   --no-upload

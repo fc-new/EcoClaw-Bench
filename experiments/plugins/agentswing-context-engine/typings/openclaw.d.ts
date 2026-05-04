@@ -110,6 +110,21 @@ declare module "openclaw/plugin-sdk/plugin-entry" {
 
     export type ContextEngineFactory = () => ContextEngine | Promise<ContextEngine>;
 
+    export interface PluginRuntime {
+        modelAuth?: {
+            resolveApiKeyForProvider: (params: {
+                provider: string;
+                cfg?: Record<string, unknown>;
+            }) => Promise<{
+                apiKey?: string;
+                source?: string;
+                mode?: string;
+                profileId?: string;
+            }>;
+        };
+        [key: string]: unknown;
+    }
+
     /**
      * OpenClawPluginApi — the registration API injected into plugin modules.
      * Only the subset we need is typed here.
@@ -117,7 +132,9 @@ declare module "openclaw/plugin-sdk/plugin-entry" {
     export interface OpenClawPluginApi {
         id: string;
         name: string;
+        config?: Record<string, unknown>;
         pluginConfig?: Record<string, unknown>;
+        runtime: PluginRuntime;
         registerContextEngine: (id: string, factory: ContextEngineFactory) => void;
         [key: string]: unknown;
     }
@@ -143,6 +160,7 @@ declare module "openclaw/plugin-sdk" {
         AgentMessage,
         ContextEngine,
         ContextEngineFactory,
+        PluginRuntime,
         OpenClawPluginApi,
         OpenClawPluginDefinition,
     } from "openclaw/plugin-sdk/plugin-entry";

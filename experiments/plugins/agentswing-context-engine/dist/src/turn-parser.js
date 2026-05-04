@@ -1,18 +1,30 @@
 /**
  * Turn Parser — Parse flat message arrays into interaction turns.
  *
- * An interaction turn (from AgentSwing paper) is a triple:
+ * An interaction turn (from the AgentSwing paper) is centered on a local
+ * environment interaction:
  *   (thinking, tool_call, tool_response)
  *
  * In OpenClaw's message format:
  *   - An assistant message may contain thinking blocks + toolCall blocks
- *   - Followed by toolResult messages matching those calls
- *   - A "pure text" assistant message (no tool calls) is also a turn boundary
+ *   - Matching toolResult messages follow
+ *   - Follow-up assistant text belongs to the same local interaction
  *
  * We split messages into:
  *   - preamble: system messages + first user message (original task prompt)
- *   - turns: sequential interaction turns
+ *   - turns: sequential interaction turns after the prompt
  */
+/**
+ * OpenClaw session files also contain runtime metadata records such as
+ * session/model changes and bootstrap markers. They are useful for replay, but
+ * they are not part of the model-visible AgentSwing trajectory.
+ */
+export function isConversationMessage(msg) {
+    return (msg.role === "system" ||
+        msg.role === "user" ||
+        msg.role === "assistant" ||
+        msg.role === "toolResult");
+}
 /**
  * Check if an assistant message contains tool calls.
  */
@@ -23,91 +35,62 @@ function hasToolCalls(msg) {
     return content.some((block) => block.type === "toolCall");
 }
 /**
- * Count tool calls in an assistant message.
- */
-function countToolCalls(msg) {
-    const content = msg.content;
-    if (!Array.isArray(content))
-        return 0;
-    return content.filter((block) => block.type === "toolCall").length;
-}
-/**
  * Parse a flat message array into preamble + interaction turns.
  *
  * Strategy:
- * 1. Collect preamble (system msgs + first user msg)
- * 2. For remaining messages, group by assistant turn boundaries:
- *    - Each assistant message starts a new turn
- *    - Subsequent toolResult messages belong to the same turn
- *    - User messages between turns are attached to the next turn
+ * 1. Collect preamble (all leading system messages + first user message)
+ * 2. For the remaining transcript:
+ *    - an assistant tool-call message starts a new interaction turn
+ *    - tool results and follow-up assistant text stay in that turn
+ *    - a mid-session user message starts a fresh turn and stays grouped with
+ *      the next assistant reply
  */
 export function parseConversation(messages) {
+    const conversationMessages = messages.filter(isConversationMessage);
     const preamble = [];
     const turns = [];
     let i = 0;
-    // Collect preamble: all leading system messages + first user message
-    while (i < messages.length) {
-        const msg = messages[i];
+    while (i < conversationMessages.length) {
+        const msg = conversationMessages[i];
         if (msg.role === "system") {
             preamble.push(msg);
             i++;
+            continue;
         }
-        else if (msg.role === "user") {
+        if (msg.role === "user") {
             preamble.push(msg);
             i++;
             break;
         }
-        else {
-            // Non-system, non-user at start (e.g., stale assistant) — stop preamble collection
-            break;
-        }
+        break;
     }
-    // Parse remaining messages into turns
     let currentTurnMsgs = [];
     const flushTurn = () => {
-        if (currentTurnMsgs.length > 0) {
-            turns.push({ messages: [...currentTurnMsgs] });
-            currentTurnMsgs = [];
+        if (currentTurnMsgs.length === 0) {
+            return;
         }
+        turns.push({ messages: [...currentTurnMsgs] });
+        currentTurnMsgs = [];
     };
-    while (i < messages.length) {
-        const msg = messages[i];
+    const currentTurnHasAssistantActivity = () => currentTurnMsgs.some((msg) => msg.role === "assistant" || msg.role === "toolResult");
+    while (i < conversationMessages.length) {
+        const msg = conversationMessages[i];
         if (msg.role === "assistant") {
-            // New assistant message = new turn boundary
-            flushTurn();
-            currentTurnMsgs.push(msg);
-            // Collect subsequent toolResult messages belonging to this assistant's tool calls
-            const expectedResults = hasToolCalls(msg) ? countToolCalls(msg) : 0;
-            let collectedResults = 0;
-            let j = i + 1;
-            while (j < messages.length && collectedResults < expectedResults) {
-                if (messages[j].role === "toolResult") {
-                    currentTurnMsgs.push(messages[j]);
-                    collectedResults++;
-                    j++;
-                }
-                else {
-                    break;
-                }
+            if (hasToolCalls(msg) && currentTurnHasAssistantActivity()) {
+                flushTurn();
             }
-            i = j;
+            currentTurnMsgs.push(msg);
+            i++;
+            continue;
         }
-        else if (msg.role === "user") {
-            // User message in the middle — flush previous turn, attach to next
+        if (msg.role === "user") {
             flushTurn();
             currentTurnMsgs.push(msg);
             i++;
+            continue;
         }
-        else if (msg.role === "toolResult") {
-            // Orphaned tool result — attach to current turn
-            currentTurnMsgs.push(msg);
-            i++;
-        }
-        else {
-            // Unknown role — attach to current turn
-            currentTurnMsgs.push(msg);
-            i++;
-        }
+        currentTurnMsgs.push(msg);
+        i++;
     }
     flushTurn();
     return { preamble, turns };
@@ -152,8 +135,9 @@ export function messagesToText(messages) {
                 if (block.type === "text" && typeof block.text === "string") {
                     parts.push(block.text);
                 }
-                else if (block.type === "thinking" && typeof block.text === "string") {
-                    parts.push(`[thinking] ${block.text}`);
+                else if (block.type === "thinking" &&
+                    (typeof block.text === "string" || typeof block.thinking === "string")) {
+                    parts.push(`[thinking] ${String(block.text ?? block.thinking)}`);
                 }
                 else if (block.type === "toolCall") {
                     parts.push(`[tool_call: ${block.name}(${JSON.stringify(block.arguments).slice(0, 200)})]`);

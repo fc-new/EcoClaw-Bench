@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -449,6 +450,25 @@ def _restrict_judge_tools(agent_id: str) -> None:
         OPENCLAW_CONFIG_PATH.write_text(
             json.dumps(cfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
         )
+        validate_result = subprocess.run(
+            ["openclaw", "config", "validate"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if validate_result.returncode != 0:
+            logger.warning(
+                "Judge config validate failed for %s after sanitize: stdout=%s stderr=%s",
+                agent_id,
+                validate_result.stdout.strip(),
+                validate_result.stderr.strip(),
+            )
+            raise RuntimeError(
+                f"judge config invalid after sanitize for {agent_id}: "
+                f"{validate_result.stdout.strip()} {validate_result.stderr.strip()}".strip()
+            )
+        else:
+            logger.info("Judge config validate passed for %s", agent_id)
         logger.info("Restricted tools for judge agent %s", agent_id)
 
 

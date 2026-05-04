@@ -1,9 +1,15 @@
 {
     "name": "agentswing-context-engine",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "description": "AgentSwing Keep-Last-N and Summary context management strategies for OpenClaw",
     "type": "module",
     "main": "dist/index.js",
+    "files": [
+        "dist",
+        "!dist/src/*.test.js",
+        "!dist/src/*.test.d.ts",
+        "openclaw.plugin.json"
+    ],
     "openclaw": {
         "extensions": [
             "./dist/index.js"
@@ -11,7 +17,8 @@
     },
     "scripts": {
         "build": "tsc",
-        "dev": "tsc --watch"
+        "dev": "tsc --watch",
+        "test": "npm run build && node --test dist/src/*.test.js"
     },
     "peerDependencies": {
         "openclaw": ">=2026.2.0"

@@ -1,17 +1,18 @@
 /**
  * Turn Parser — Parse flat message arrays into interaction turns.
  *
- * An interaction turn (from AgentSwing paper) is a triple:
+ * An interaction turn (from the AgentSwing paper) is centered on a local
+ * environment interaction:
  *   (thinking, tool_call, tool_response)
  *
  * In OpenClaw's message format:
  *   - An assistant message may contain thinking blocks + toolCall blocks
- *   - Followed by toolResult messages matching those calls
- *   - A "pure text" assistant message (no tool calls) is also a turn boundary
+ *   - Matching toolResult messages follow
+ *   - Follow-up assistant text belongs to the same local interaction
  *
  * We split messages into:
  *   - preamble: system messages + first user message (original task prompt)
- *   - turns: sequential interaction turns
+ *   - turns: sequential interaction turns after the prompt
  */
 /** Minimal message shape we depend on (subset of AgentMessage). */
 export interface Msg {
@@ -20,7 +21,7 @@ export interface Msg {
     [key: string]: unknown;
 }
 export interface InteractionTurn {
-    /** All messages belonging to this turn (assistant + tool results). */
+    /** All messages belonging to this turn. */
     messages: Msg[];
 }
 export interface ParsedConversation {
@@ -30,14 +31,21 @@ export interface ParsedConversation {
     turns: InteractionTurn[];
 }
 /**
+ * OpenClaw session files also contain runtime metadata records such as
+ * session/model changes and bootstrap markers. They are useful for replay, but
+ * they are not part of the model-visible AgentSwing trajectory.
+ */
+export declare function isConversationMessage(msg: Msg): boolean;
+/**
  * Parse a flat message array into preamble + interaction turns.
  *
  * Strategy:
- * 1. Collect preamble (system msgs + first user msg)
- * 2. For remaining messages, group by assistant turn boundaries:
- *    - Each assistant message starts a new turn
- *    - Subsequent toolResult messages belong to the same turn
- *    - User messages between turns are attached to the next turn
+ * 1. Collect preamble (all leading system messages + first user message)
+ * 2. For the remaining transcript:
+ *    - an assistant tool-call message starts a new interaction turn
+ *    - tool results and follow-up assistant text stay in that turn
+ *    - a mid-session user message starts a fresh turn and stays grouped with
+ *      the next assistant reply
  */
 export declare function parseConversation(messages: Msg[]): ParsedConversation;
 /**

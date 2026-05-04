@@ -29,19 +29,12 @@ Output ONLY the summary text, no additional framing.`;
  * Call an OpenAI-compatible chat completion API to generate a summary.
  */
 export async function generateSummary(messagesToSummarize, options = {}) {
-    const apiBase = options.apiBase ??
-        process.env.AGENTSWING_SUMMARY_API_BASE ??
-        process.env.OPENCLAW_API_BASE ??
-        "";
-    const apiKey = options.apiKey ??
-        process.env.AGENTSWING_SUMMARY_API_KEY ??
-        process.env.OPENCLAW_API_KEY ??
-        "";
-    const model = options.model ?? process.env.AGENTSWING_SUMMARY_MODEL ?? "gpt-5-mini";
+    const apiBase = options.apiBase ?? "";
+    const apiKey = options.apiKey ?? "";
+    const model = options.model ?? "gpt-5-mini";
     const maxTokens = options.maxTokens ?? 4096;
     if (!apiBase) {
-        throw new Error("AgentSwing summarizer: no API base URL configured. " +
-            "Set AGENTSWING_SUMMARY_API_BASE or provide apiBase in options.");
+        throw new Error("AgentSwing summarizer: no API base URL configured.");
     }
     const historyText = messagesToText(messagesToSummarize);
     const url = `${apiBase.replace(/\/+$/, "")}/chat/completions`;
@@ -51,7 +44,14 @@ export async function generateSummary(messagesToSummarize, options = {}) {
             { role: "system", content: SUMMARY_SYSTEM_PROMPT },
             {
                 role: "user",
-                content: `Please summarize the following interaction history:\n\n${historyText}`,
+                content: [
+                    options.originalPrompt
+                        ? `The original user prompt below will remain in context separately. Do not restate it verbatim.\n\n[Original User Prompt]\n${options.originalPrompt}`
+                        : "",
+                    `Please summarize the following interaction history:\n\n${historyText}`,
+                ]
+                    .filter((part) => part.length > 0)
+                    .join("\n\n"),
             },
         ],
         max_tokens: maxTokens,
